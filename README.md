@@ -84,6 +84,7 @@ Use this to answer questions about the user and prior work.
 |------|---------|
 | `mnemosyne_remember` | Store facts, preferences, context |
 | `mnemosyne_recall` | Search stored memories |
+| `mnemosyne_update` | Update existing memory content/importance |
 | `mnemosyne_stats` | Check memory system health |
 
 ---
@@ -138,6 +139,36 @@ remember(
 
 # Recall with semantic relevance
 results = recall("interface preferences", top_k=3)
+
+# Update an existing memory
+update(
+    memory_id="abc123...",
+    content="User prefers Neovim with AstroNvim config",
+    importance=0.95
+)
+```
+
+---
+
+## 💻 CLI Commands
+
+Mnemosyne includes a full CLI for memory management:
+
+```bash
+# Store a memory
+python -m mnemosyne.cli store "User prefers dark mode" --importance 0.9
+
+# Search memories
+python -m mnemosyne.cli recall "preferences"
+
+# Update a memory
+python -m mnemosyne.cli update <memory_id> "New content" --importance 0.8
+
+# Delete a memory
+python -m mnemosyne.cli delete <memory_id>
+
+# Show stats
+python -m mnemosyne.cli stats
 ```
 
 ---
