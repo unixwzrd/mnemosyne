@@ -9,9 +9,13 @@
 
 Mnemosyne achieves **state-of-the-art retrieval performance** across all BEAM scales (100K to 10M tokens), with sub-50ms latency, 7.2 MB storage at 10M, and perfect abstention accuracy on unanswerable questions. The BEAM tier architecture (Working, Episodic, Scratchpad) delivers linear scaling with no degradation at scale.
 
+![BEAM SOTA Summary Card](assets/charts/beam_sota_card.png)
+
 ---
 
-## SOTA Retrieval Benchmarks
+## Retrieval Performance
+
+![Retrieval Performance](assets/charts/beam_retrieval_performance.png)
 
 | Scale | Recall@10 | Latency | Storage | Messages | Throughput |
 |-------|-----------|---------|---------|----------|------------|
@@ -25,13 +29,19 @@ Mnemosyne achieves **state-of-the-art retrieval performance** across all BEAM sc
 - Latency DROPS at 10M (35ms vs 372ms at 100K) due to episodic compression (6.8x speedup)
 - Storage grows linearly: 0.36 KB per message (2.5 years of daily conversation = 330 KB)
 - 28.6 queries/second at 10M scale (production-ready)
-- **Episodic compression: 9.4x storage savings** (35 MB → 3.8 MB on 100K benchmark)
+- **Episodic compression: 9.4x storage savings** (35 MB to 3.8 MB on 100K benchmark)
+
+![Latency Distribution](assets/charts/beam_latency_distribution.png)
+
+![Throughput](assets/charts/beam_throughput.png)
 
 ---
 
 ## End-to-End BEAM Evaluation
 
 Full BEAM protocol: ingest, retrieve, LLM answer, rubric-based LLM-as-judge scoring.
+
+![End-to-End Comparison](assets/charts/beam_e2e_comparison.png)
 
 | Scale | Mnemosyne v5 | Hindsight | Honcho | LIGHT | RAG |
 |-------|-------------|-----------|--------|-------|-----|
@@ -46,7 +56,9 @@ Full BEAM protocol: ingest, retrieve, LLM answer, rubric-based LLM-as-judge scor
 
 ---
 
-## Per-Ability Analysis (v5, 100K)
+## Per-Ability Analysis
+
+![Ability Radar](assets/charts/beam_ability_radar.png)
 
 | Ability | Score | Description | Status |
 |---------|-------|-------------|--------|
@@ -61,10 +73,18 @@ Full BEAM protocol: ingest, retrieve, LLM answer, rubric-based LLM-as-judge scor
 
 ---
 
+## Storage Efficiency
+
+![Storage Efficiency](assets/charts/beam_storage_efficiency.png)
+
+Mnemosyne achieves **9.4x storage compression** vs naive storage via its episodic consolidation tier. At 10M tokens, the total database is just **7.2 MB** -- small enough to fit in a Git repo.
+
+---
+
 ## Innovation: BEAM Tier Architecture
 
 ```
-Working Memory (hot)  ──→  Episodic Memory (warm)  ──→  Scratchpad (cold)
+Working Memory (hot)  --  Episodic Memory (warm)  --  Scratchpad (cold)
     FTS5 keyword            Vector embeddings             Thread-safe ring buffer
     <1ms access             6.8x compression              Persistent overflow
 ```
