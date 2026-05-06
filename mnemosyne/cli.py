@@ -116,7 +116,10 @@ def cmd_stats(args):
 def cmd_sleep(args):
     """Run consolidation cycle."""
     mem = _get_memory()
-    result = mem.sleep()
+    # Use sleep_all_sessions to consolidate across ALL sessions, not just "default"
+    # The per-session sleep() uses the Mnemosyne instance's session_id which is
+    # always "default" when created from CLI — causing the phantom session bug.
+    result = mem.sleep_all_sessions()
     print(f"Consolidation complete: {result}")
 
 

@@ -229,7 +229,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return [
             {"key": "auto_sleep", "description": "Auto-run sleep() when working memory exceeds threshold (default: false — set MNEMOSYNE_AUTO_SLEEP_ENABLED=true to enable)", "default": False},
             {"key": "sleep_threshold", "description": "Working memory count before auto-sleep triggers", "default": 50},
-            {"key": "vector_type", "description": "Vector storage type", "choices": ["float32", "int8", "bit"], "default": "float32"},
+            {"key": "vector_type", "description": "Vector storage type", "choices": ["float32", "int8", "bit"], "default": "int8"},
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
@@ -266,15 +266,29 @@ class MnemosyneMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Recall relevant context via Mnemosyne hybrid search with temporal weighting."""
+        """Recall relevant context via Mnemosyne hybrid search with temporal weighting.
+        
+        Only includes memories above a relevance threshold to prevent context pollution
+        from low-quality matches."""
         if not self._beam or self._agent_context in ("cron", "flush", "subagent"):
             return ""
         try:
             results = self._beam.recall(query, top_k=8, temporal_weight=0.2, temporal_halflife=48)
             if not results:
                 return ""
+            # Filter out low-relevance results to prevent context pollution
+            # Only include memories with score above threshold or high importance
+            MIN_SCORE_THRESHOLD = 0.15
+            MIN_IMPORTANCE_THRESHOLD = 0.5
+            filtered = [
+                r for r in results
+                if r.get("score", 0) >= MIN_SCORE_THRESHOLD
+                or r.get("importance", 0) >= MIN_IMPORTANCE_THRESHOLD
+            ]
+            if not filtered:
+                return ""
             lines = ["## Mnemosyne Context"]
-            for r in results:
+            for r in filtered:
                 content = r.get("content", "")[:200]
                 if len(r.get("content", "")) > 200:
                     content += "..."

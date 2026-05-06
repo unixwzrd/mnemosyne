@@ -52,13 +52,13 @@ With all optional features (dense retrieval + local LLM consolidation):
 pip install mnemosyne-memory[all]
 ```
 
-> ⚠️ **Ubuntu 24.04 / Debian 12 users:** If you get `error: externally-managed-environment`, your system Python is PEP 668-protected. Use a virtual environment:
+> ⚠️ **Ubuntu 24.04 / Debian 12 users:** If you get `error: externally-managed-environment`, your system Python is PEP 668-protected. **Install Mnemosyne into the Hermes runtime venv** (not a separate one) to avoid ABI mismatches with compiled dependencies:
 > ```bash
-> python3 -m venv .venv
-> source .venv/bin/activate
-> pip install mnemosyne-memory[all]
+> HERMES_PY="$HOME/.hermes/hermes-agent/venv/bin/python"
+> "$HERMES_PY" -m pip install --upgrade --no-cache-dir "mnemosyne-memory[all]"
+> "$HERMES_PY" -m mnemosyne.install
 > ```
-> Make sure to activate the venv every time you run Hermes, or install Hermes itself inside the same venv.
+> Installing into a separate venv can cause NumPy, sqlite-vec, or fastembed ABI crashes when Hermes tries to import them.
 
 ### Option B: Install from source (for development)
 
