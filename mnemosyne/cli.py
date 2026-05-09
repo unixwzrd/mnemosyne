@@ -168,7 +168,14 @@ def cmd_export(args):
     output_path = args[0] if args else os.path.join(DATA_DIR, "mnemosyne_export.json")
     mem = _get_memory()
     result = mem.export_to_file(output_path)
-    print(f"Exported {result.get('count', 0)} memories to {output_path}")
+    print(
+        "Exported "
+        f"{result.get('working_memory_count', 0)} working, "
+        f"{result.get('episodic_memory_count', 0)} episodic, "
+        f"{result.get('legacy_memories_count', 0)} legacy, "
+        f"{result.get('triples_count', 0)} triples "
+        f"to {output_path}"
+    )
 
 
 def cmd_import(args):
