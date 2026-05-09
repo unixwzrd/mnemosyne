@@ -38,9 +38,21 @@ if os.environ.get("MNEMOSYNE_DATA_DIR"):
     DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
 
 
+def _default_data_dir() -> Path:
+    """Return the current default data directory, honoring runtime env changes."""
+    if os.environ.get("MNEMOSYNE_DATA_DIR"):
+        return Path(os.environ["MNEMOSYNE_DATA_DIR"])
+    return DEFAULT_DATA_DIR
+
+
+def _default_db_path() -> Path:
+    """Return the current default DB path, honoring runtime env changes."""
+    return _default_data_dir() / "mnemosyne.db"
+
+
 def _get_connection(db_path = None) -> sqlite3.Connection:
     """Get thread-local database connection"""
-    path = Path(db_path) if db_path else DEFAULT_DB_PATH
+    path = Path(db_path) if db_path else _default_db_path()
     if not hasattr(_thread_local, 'conn') or _thread_local.conn is None or getattr(_thread_local, 'db_path', None) != str(path):
         path.parent.mkdir(parents=True, exist_ok=True)
         _thread_local.conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -124,7 +136,7 @@ class Mnemosyne:
             from mnemosyne.core.banks import BankManager
             self.db_path = BankManager().get_bank_db_path(bank)
         else:
-            self.db_path = DEFAULT_DB_PATH
+            self.db_path = _default_db_path()
 
         self.conn = _get_connection(self.db_path)
         init_db(self.db_path)
