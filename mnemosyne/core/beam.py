@@ -31,6 +31,19 @@ except ImportError:
     classify_memory = None
     MemoryType = None
 
+# Binary vector compression (Phase 2 — Moorcheh ITS)
+try:
+    from mnemosyne.core.binary_vectors import (
+        BinaryVectorStore,
+        maximally_informative_binarization as _mib,
+        hamming_distance as _hamming,
+        EMBEDDING_DIM,
+        BYTES_PER_VECTOR,
+    )
+except ImportError:
+    _mib = None
+    _hamming = None
+
 try:
     import numpy as np
 except ImportError:
@@ -211,6 +224,12 @@ def init_beam(db_path: Path = None):
         pass
     try:
         cursor.execute("ALTER TABLE episodic_memory ADD COLUMN memory_type TEXT DEFAULT 'unknown'")
+    except sqlite3.OperationalError:
+        pass
+
+    # --- Binary vector migration (Phase 2) ---
+    try:
+        cursor.execute("ALTER TABLE episodic_memory ADD COLUMN binary_vector BLOB")
     except sqlite3.OperationalError:
         pass
 
@@ -1168,6 +1187,17 @@ class BeamMemory:
                         VALUES (?, ?, ?)
                     """, (memory_id, _embeddings.serialize(vec[0]), _embeddings._DEFAULT_MODEL))
 
+                # Binary vector compression (Phase 2 — 32x reduction)
+                if _mib is not None:
+                    try:
+                        bv = _mib(vec[0])
+                        cursor.execute(
+                            "UPDATE episodic_memory SET binary_vector = ? WHERE rowid = ?",
+                            (bv, rowid)
+                        )
+                    except Exception:
+                        pass  # Non-blocking
+
         self.conn.commit()
         return memory_id
 
@@ -1691,7 +1721,7 @@ class BeamMemory:
             placeholders = ",".join("?" * len(episodic_rowids))
             cursor = self.conn.cursor()
             cursor.execute(f"""
-                SELECT rowid, id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, memory_type
+                SELECT rowid, id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, memory_type, binary_vector
                 FROM episodic_memory
                 WHERE rowid IN ({placeholders})
                   AND {em_where}
@@ -1735,7 +1765,7 @@ class BeamMemory:
         if not episodic_rowids:
             cursor = self.conn.cursor()
             cursor.execute(f"""
-                SELECT rowid, id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, memory_type
+                SELECT rowid, id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, memory_type, binary_vector
                 FROM episodic_memory
                 WHERE {em_where}
                 ORDER BY timestamp DESC
