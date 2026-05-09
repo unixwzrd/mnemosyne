@@ -98,13 +98,21 @@ class CogneeImporter(BaseImporter):
                 rows = conn.execute(
                     "SELECT * FROM data_chunks ORDER BY created_at"
                 ).fetchall()
-                for row in rows:
+                for raw_row in rows:
+                    # sqlite3.Row supports bracket access but not .get();
+                    # convert to dict so the column-with-default reads
+                    # below work. Pre-fix the .get() calls raised
+                    # AttributeError and the broad `except` below swallowed
+                    # it silently, returning [] for every direct cognee
+                    # import even when data_chunks was populated. Same
+                    # pattern as the fact_recall fix in C12.a.
+                    row = dict(raw_row)
                     items.append({
-                        "content": row["text"] or row["content"] or "",
+                        "content": row.get("text") or row.get("content") or "",
                         "source": "cognee_direct",
                         "metadata": {
-                            "chunk_id": row.get("id", ""),
-                            "document_id": row.get("document_id", ""),
+                            "chunk_id": row.get("id") or "",
+                            "document_id": row.get("document_id") or "",
                         },
                         "timestamp": row.get("created_at"),
                     })
