@@ -49,13 +49,18 @@ def _get_memory(session_id: str = None):
     if session_id is None:
         session_id = os.environ.get("HERMES_SESSION_ID", "hermes_default")
     if _memory_instance is None or _current_session_id != session_id:
-        _current_session_id = session_id
-        _memory_instance = Mnemosyne(
+        # Build into a local first so a Mnemosyne(...) failure (DB locked,
+        # embedding init error, etc.) does not poison global state — leaving
+        # _current_session_id ahead of _memory_instance would make the next
+        # call return the stale instance silently.
+        new_memory = Mnemosyne(
             session_id=session_id,
             author_id=os.environ.get("MNEMOSYNE_AUTHOR_ID"),
             author_type=os.environ.get("MNEMOSYNE_AUTHOR_TYPE"),
             channel_id=os.environ.get("MNEMOSYNE_CHANNEL_ID")
         )
+        _memory_instance = new_memory
+        _current_session_id = session_id
         # Triple store cache must follow memory; reset so the next
         # _get_triples() rebuilds with the new instance's db_path.
         _triple_store = None
@@ -65,15 +70,14 @@ def _get_memory(session_id: str = None):
 def _get_triples():
     """Get or create global triple store instance, aligned with memory DB path.
 
-    Reads `_memory_instance` directly when present so this call does not
-    inadvertently trigger a session rebind via `_get_memory()` — calling
-    that with no args resolves session_id from the HERMES_SESSION_ID env
-    (or "hermes_default"), which may not match the active caller's session.
-    A db_path mismatch check rebuilds the cache if memory ever points at a
-    different DB than the cached store.
+    Calls `_get_memory()` so HERMES_SESSION_ID env changes trigger the same
+    session-rebind logic as direct memory operations — a triple-only call
+    after an env change still routes to the new session's DB. The defensive
+    db_path mismatch check is cheap insurance against any future code path
+    that could mutate memory's db_path without going through _get_memory.
     """
     global _triple_store
-    mem = _memory_instance if _memory_instance is not None else _get_memory()
+    mem = _get_memory()
     if _triple_store is None or Path(_triple_store.db_path) != Path(mem.db_path):
         _triple_store = TripleStore(db_path=mem.db_path)
     return _triple_store

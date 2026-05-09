@@ -51,18 +51,25 @@ class TestTripleStoreCacheInvalidation:
         self, tmp_path, monkeypatch
     ):
         """_get_triples() must return a store aligned with the active
-        Mnemosyne instance's db_path, not the first one captured."""
+        Mnemosyne instance's db_path, not the first one captured.
+
+        Sets HERMES_SESSION_ID env to mirror each explicit session, the
+        way Hermes does in production, so any internal _get_memory() call
+        that reads env stays consistent with the caller's intent.
+        """
         db_a = tmp_path / "a.db"
         db_b = tmp_path / "b.db"
         _route_mnemosyne(monkeypatch, {"session_a": db_a, "session_b": db_b})
 
         # First session
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_a")
         mem_a = hermes_plugin._get_memory("session_a")
         assert Path(mem_a.db_path) == db_a
         triples_first = hermes_plugin._get_triples()
         assert Path(triples_first.db_path) == db_a
 
         # Second session — different db
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_b")
         mem_b = hermes_plugin._get_memory("session_b")
         assert Path(mem_b.db_path) == db_b
 
@@ -83,6 +90,7 @@ class TestTripleStoreCacheInvalidation:
         _route_mnemosyne(monkeypatch, {"session_a": db_a, "session_b": db_b})
 
         # Session a — write triple_a
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_a")
         hermes_plugin._get_memory("session_a")
         result_a = json.loads(tools.mnemosyne_triple_add({
             "subject": "alice",
@@ -93,6 +101,7 @@ class TestTripleStoreCacheInvalidation:
         assert result_a.get("status") == "added", f"unexpected: {result_a}"
 
         # Session b — write triple_b
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_b")
         hermes_plugin._get_memory("session_b")
         result_b = json.loads(tools.mnemosyne_triple_add({
             "subject": "carol",
@@ -121,4 +130,32 @@ class TestTripleStoreCacheInvalidation:
         )
         assert len(leaked_to_b) == 0, (
             f"alice triple leaked into db_b"
+        )
+
+    def test_get_triples_honors_env_change_without_explicit_memory_call(
+        self, tmp_path, monkeypatch
+    ):
+        """If HERMES_SESSION_ID env changes but no explicit _get_memory(session_id)
+        is made before the next triple call, _get_triples() should still route
+        to the new session's DB. Locks in env-honoring behavior; pre-review
+        revisions of this fix regressed this scenario.
+        """
+        db_a = tmp_path / "a.db"
+        db_b = tmp_path / "b.db"
+        _route_mnemosyne(monkeypatch, {"session_a": db_a, "session_b": db_b})
+
+        # Bind memory to session_a
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_a")
+        hermes_plugin._get_memory("session_a")
+        triples_a = hermes_plugin._get_triples()
+        assert Path(triples_a.db_path) == db_a
+
+        # Env changes to session_b — no explicit _get_memory call.
+        monkeypatch.setenv("HERMES_SESSION_ID", "session_b")
+
+        # Next _get_triples() call should follow env, not stay on session_a.
+        triples_b = hermes_plugin._get_triples()
+        assert Path(triples_b.db_path) == db_b, (
+            f"_get_triples() did not honor env change: still at "
+            f"{triples_b.db_path} after env switch to session_b"
         )
