@@ -133,8 +133,7 @@ def cmd_stats(args):
     print(f"  Total memories: {stats.get('total_memories', 0)}")
     print(f"  Working memory: {wm.get('total', 0)}")
     print(f"  Episodic memory: {ep.get('total', 0)}")
-    if triples.get("total"):
-        print(f"  Knowledge triples: {triples['total']}")
+    print(f"  Knowledge triples: {triples.get('total', 0)}")
     if stats.get("banks"):
         print(f"\n  Banks: {', '.join(stats['banks'])}")
     print(f"  DB path: {stats.get('database', 'N/A')}")

@@ -39,47 +39,45 @@ def _run_cmd_stats(monkeypatch, db_path, capsys):
     return capsys.readouterr().out
 
 
+def _line_value(out, prefix):
+    """Return the integer value after `<prefix>:` in cmd_stats output.
+    Fails the test loudly if the line is missing or non-numeric."""
+    for line in out.splitlines():
+        if line.strip().startswith(prefix):
+            value = line.split(":", 1)[1].strip()
+            try:
+                return int(value)
+            except ValueError:
+                pytest.fail(f"{prefix} value not an int: {value!r}")
+    pytest.fail(f"{prefix!r} line missing from stats output:\n{out}")
+
+
 class TestCliStatsRegression:
-    def test_stats_does_not_print_zeros_when_data_exists(self, tmp_path, monkeypatch, capsys):
+    def test_stats_prints_working_count_not_zero(self, tmp_path, monkeypatch, capsys):
         db_path = tmp_path / "mnemosyne.db"
         _seed(db_path)
         out = _run_cmd_stats(monkeypatch, db_path, capsys)
-        # Working memory line must show >= 1 (we seeded one)
-        for line in out.splitlines():
-            if line.strip().startswith("Working memory:"):
-                assert "0" not in line.split(":", 1)[1].strip(), \
-                    f"Working memory printed as 0 with seeded data: {line!r}"
-                break
-        else:
-            pytest.fail("'Working memory:' line missing from stats output")
+        assert _line_value(out, "Working memory") >= 1
 
     def test_stats_prints_episodic_count(self, tmp_path, monkeypatch, capsys):
         db_path = tmp_path / "mnemosyne.db"
         _seed(db_path)
         out = _run_cmd_stats(monkeypatch, db_path, capsys)
-        for line in out.splitlines():
-            if line.strip().startswith("Episodic memory:"):
-                value = line.split(":", 1)[1].strip()
-                assert int(value) >= 1, \
-                    f"Episodic count was {value!r}, expected >= 1"
-                return
-        pytest.fail("'Episodic memory:' line missing from stats output")
+        assert _line_value(out, "Episodic memory") >= 1
 
     def test_stats_prints_triple_count(self, tmp_path, monkeypatch, capsys):
         db_path = tmp_path / "mnemosyne.db"
         _seed(db_path)
         out = _run_cmd_stats(monkeypatch, db_path, capsys)
-        # The triple line is conditional on truthy value — with data seeded,
-        # it must appear and show >= 1.
-        triple_lines = [
-            line for line in out.splitlines()
-            if "triple" in line.lower() or "Knowledge" in line
-        ]
-        assert triple_lines, "Triple/Knowledge line missing from stats output"
-        # At least one of those lines should reflect a real count.
-        assert any(
-            ch.isdigit() and ch != "0" for line in triple_lines for ch in line
-        ), f"Triple line(s) show no nonzero count: {triple_lines}"
+        assert _line_value(out, "Knowledge triples") >= 1
+
+    def test_stats_prints_zero_triples_on_fresh_db(self, tmp_path, monkeypatch, capsys):
+        """Fresh DB with no triples must still show 'Knowledge triples: 0',
+        consistent with how Working / Episodic always render 0."""
+        db_path = tmp_path / "mnemosyne.db"
+        Mnemosyne(session_id="c23-fresh", db_path=db_path)
+        out = _run_cmd_stats(monkeypatch, db_path, capsys)
+        assert _line_value(out, "Knowledge triples") == 0
 
     def test_stats_prints_real_db_path_not_na(self, tmp_path, monkeypatch, capsys):
         db_path = tmp_path / "mnemosyne.db"
