@@ -864,14 +864,20 @@ def _fts_search(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]
         content_words = [w for w in safe_query.split() if w.lower() not in _stop_words and len(w) > 1]
         if not content_words:
             content_words = [w for w in safe_query.split() if len(w) > 1]
-        fts_query = " OR ".join(content_words)
+        # BEAM mode: if stop-word filtering leaves only 1 word, include ALL original
+        # non-stop-word tokens (not just content_words) to broaden recall
+        original_words = [w for w in query.split() if w.lower() not in _stop_words and len(w) > 1]
+        if len(content_words) <= 1 and len(original_words) > 1:
+            fts_query = " OR ".join(original_words)
+        else:
+            fts_query = " OR ".join(content_words)
         if not fts_query:
             return []
     else:
         fts_query = safe_query
     
     rows = conn.execute(
-        "SELECT rowid, rank FROM fts_episodes WHERE fts_episodes MATCH ? ORDER BY rank LIMIT ?",
+        "SELECT rowid, rank FROM fts_episodes WHERE fts_episodes MATCH ? ORDER BY rank, rowid LIMIT ?",
         (fts_query, k)
     ).fetchall()
     return [{"rowid": r["rowid"], "rank": r["rank"]} for r in rows]
@@ -902,9 +908,20 @@ def _fts_search_working(conn: sqlite3.Connection, query: str, k: int = 20) -> Li
         fts_query = safe_query
     
     rows = conn.execute(
-        "SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank LIMIT ?",
+        "SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank, id LIMIT ?",
         (fts_query, k)
     ).fetchall()
+
+    # BEAM mode: if phrase query returns 0, fall back to individual word OR search
+    # This handles cases like "What operating system" where no single entry has
+    # all content words but individual words like "operating" or "system" may match
+    if not rows and _BEAM_MODE and len(content_words) > 1:
+        fts_query_fallback = " OR ".join(content_words)
+        rows = conn.execute(
+            "SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank, id LIMIT ?",
+            (fts_query_fallback, k)
+        ).fetchall()
+
     return [{"id": r["id"], "rank": r["rank"]} for r in rows]
 
 
@@ -1581,14 +1598,20 @@ class BeamMemory:
 
         for row in rows:
             content_lower = row["content"].lower()
+            content_words_list = content_lower.split()
+            content_words_set = set(content_words_list)
             if wm_ranks and row["id"] in wm_ranks:
                 normalized = 1.0 - ((wm_ranks[row["id"]] - min_rank) / rng)
                 relevance = normalized
             else:
+                # exact: query words appearing in content (substring match, not token equality)
                 exact = sum(1 for w in query_words if w in content_lower)
-                partial = sum(1 for w in query_words for cw in content_lower.split() if w in cw or cw in w)
-                # Cross-substring match: if any query word is a substring of content, or vice versa
-                cross = sum(1 for w in query_words if len(w) >= 2 for cw in content_lower.split() if len(cw) >= 2 and (w in cw or cw in w))
+                # partial: unique query words with substring match in content words (set-based, not cartesian)
+                partial = sum(1 for w in query_words if len(w) >= 2 and any(w in cw or cw in w for cw in content_words_set if len(cw) >= 2))
+                # cross: query substrings matched against content word substrings (set-based)
+                query_substr = {w for w in query_words if len(w) >= 2}
+                content_substr = {cw for cw in content_words_set if len(cw) >= 2}
+                cross = sum(1 for q in query_substr for c in content_substr if q in c or c in q)
                 # Also check if the full query is a substring of content (handles spaceless languages)
                 full_match = 1.0 if query_lower in content_lower else 0.0
                 if not full_match and content_lower in query_lower:
@@ -1866,6 +1889,15 @@ class BeamMemory:
                         "fact_match": True
                     })
 
+        # ---- Pre-compute query binary vector (Phase 5 binary voice) ----
+        query_bv = None
+        query_emb_for_bv = None
+        if _embeddings.available() and _mib is not None:
+            emb_result = _embeddings.embed_query(query)
+            if emb_result is not None:
+                query_emb_for_bv = emb_result
+                query_bv = _mib(emb_result)
+
         # ---- Episodic memory (vec + FTS5 hybrid) ----
         vec_results = {}
         max_distance = 0.0
@@ -1964,8 +1996,10 @@ class BeamMemory:
             # Phase 5: Graph + fact voices (polyphonic recall bonus)
             graph_bonus = 0.0
             fact_bonus = 0.0
+            binary_bonus = 0.0
             memory_id = row["id"]
             content_lower = row["content"].lower()
+            bv = row["binary_vector"]
             if self.episodic_graph is not None:
                 try:
                     # Count graph edges for this memory (well-connected = more relevant)
@@ -1979,23 +2013,42 @@ class BeamMemory:
                     pass
             if self.episodic_graph is not None:
                 try:
-                    # Check if facts from graph match query terms
+                    # Check if facts from graph match query terms via set-overlap
                     cursor2 = self.conn.cursor()
                     cursor2.execute(
                         "SELECT subject, predicate, object FROM facts WHERE source_msg_id = ?",
                         (memory_id,))
-                    query_lower_words = [w for w in query.lower().split() if len(w) > 2]
+                    query_word_set = {w for w in query.lower().split() if len(w) > 2}
                     match_count = 0
                     for frow in cursor2.fetchall():
-                        fact_text = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
-                        if any(w in fact_text for w in query_lower_words):
+                        fact_tokens = {t.lower() for t in (f"{frow['subject']} {frow['predicate']} {frow['object']}").split() if len(t) > 2}
+                        if query_word_set & fact_tokens:
                             match_count += 1
                     fact_bonus = min(match_count * 0.04, 0.1)
                 except Exception:
                     pass
+            # Binary vector voice (Phase 5): re-enabled — binary vectors are now
+            # backfilled for all episodic entries. ITS discriminability improves at
+            # scale (1033 entries); clustering concern was for small synthetic sets.
+            if query_bv is not None and bv is not None:
+                try:
+                    # Compute hamming distance via XOR + popcount
+                    q_arr = np.frombuffer(query_bv, dtype=np.uint8)
+                    m_arr = np.frombuffer(bv, dtype=np.uint8)
+                    xor_arr = np.bitwise_xor(q_arr, m_arr)
+                    popcount_table = np.array([bin(i).count('1') for i in range(256)], dtype=np.uint32)
+                    h_dist = int(np.sum(popcount_table[xor_arr]))
+                    # Sigmoid: max bonus at distance=0, bonus ~0 at distance=EMBEDDING_DIM
+                    # Use tanh for smooth falloff; bonus range [0, 0.08]
+                    normalized_dist = h_dist / EMBEDDING_DIM  # 0.0 (identical) to 1.0 (opposite)
+                    binary_bonus = 0.08 * (1.0 - np.tanh(normalized_dist * 3.0))
+                except Exception:
+                    binary_bonus = 0.0
+            else:
+                binary_bonus = 0.0
 
             score = base_score * (0.7 + 0.3 * decay)
-            score += graph_bonus + fact_bonus  # Phase 5: polyphonic bonuses
+            score += graph_bonus + fact_bonus + binary_bonus  # Phase 5: polyphonic bonuses
             # Temporal boost (Phase 3)
             if temporal_weight > 0.0:
                 t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
@@ -2034,9 +2087,15 @@ class BeamMemory:
             """, em_params)
             for row in cursor.fetchall():
                 content_lower = row["content"].lower()
-                exact = sum(1 for w in query_words if w in content_lower)
-                partial = sum(1 for w in query_words for cw in content_lower.split() if w in cw or cw in w)
-                cross = sum(1 for w in query_words if len(w) >= 2 for cw in content_lower.split() if len(cw) >= 2 and (w in cw or cw in w))
+                content_words_set = set(content_lower.split())
+                # exact: query words appearing as complete tokens in content
+                exact = sum(1 for w in query_words if w in content_words_set)
+                # partial: unique query words with substring match in content words (set-based, not cartesian)
+                partial = sum(1 for w in query_words if len(w) >= 2 and any(w in cw or cw in w for cw in content_words_set if len(cw) >= 2))
+                # cross: query substrings matched against content word substrings (set-based)
+                query_substr = {w for w in query_words if len(w) >= 2}
+                content_substr = {cw for cw in content_words_set if len(cw) >= 2}
+                cross = sum(1 for q in query_substr for c in content_substr if q in c or c in q)
                 full_match = 1.0 if query_lower in content_lower else 0.0
                 if not full_match and content_lower in query_lower:
                     full_match = 0.5
@@ -2053,9 +2112,10 @@ class BeamMemory:
                     base_score = relevance * kw_share + row["importance"] * iw
                     score = base_score * (rc_share + (1.0 - rc_share) * decay)
 
-                    # Phase 5: Graph + fact bonuses for fallback
+                    # Phase 5: Graph + fact + binary bonuses for fallback
                     graph_b = 0.0
                     fact_b = 0.0
+                    binary_b = 0.0
                     try:
                         cursor2 = self.conn.cursor()
                         cursor2.execute(
@@ -2069,16 +2129,18 @@ class BeamMemory:
                         cursor2.execute(
                             "SELECT subject, predicate, object FROM facts WHERE source_msg_id = ?",
                             (row["id"],))
-                        qlw = [w for w in query.lower().split() if len(w) > 2]
+                        q_word_set = {w for w in query.lower().split() if len(w) > 2}
                         mc = 0
                         for frow in cursor2.fetchall():
-                            ft = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
-                            if any(w in ft for w in qlw):
+                            f_tokens = {t.lower() for t in (f"{frow['subject']} {frow['predicate']} {frow['object']}").split() if len(t) > 2}
+                            if q_word_set & f_tokens:
                                 mc += 1
                         fact_b = min(mc * 0.04, 0.1)
                     except Exception:
                         pass
-                    score += graph_b + fact_b
+                    # Binary vector bonus disabled (same reason as main path — ITS clustering)
+                    binary_b = 0.0
+                    score += graph_b + fact_b + binary_b
                     # Temporal boost (Phase 3)
                     if temporal_weight > 0.0:
                         t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
@@ -2260,7 +2322,7 @@ class BeamMemory:
         # Try FTS5 search first
         try:
             fts_rows = cursor.execute(
-                "SELECT rowid, rank FROM fts_facts WHERE fts_facts MATCH ? ORDER BY rank LIMIT ?",
+                "SELECT rowid, rank FROM fts_facts WHERE fts_facts MATCH ? ORDER BY rank, rowid LIMIT ?",
                 (query, top_k * 3)
             ).fetchall()
         except Exception:

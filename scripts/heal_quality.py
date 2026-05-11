@@ -25,11 +25,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# mnemosyne root for imports
-_MNEMOSYNE_ROOT = Path(__file__).resolve().parent.parent
-if str(_MNEMOSYNE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_MNEMOSYNE_ROOT))
-
 import sqlite3
 
 # --- Config knobs (also overrideable via env) ---
@@ -97,15 +92,16 @@ def extract_memory_units(session_path: Path, budget: int = MEMORY_UNIT_BUDGET) -
     tokens = 0
 
     for msg in messages[-80:]:  # last 80 messages
-        content = str(msg.get("content", ""))
         role = msg.get("role", "")
 
-        # Strip tool-call JSON blobs but keep the output
+        # Skip tool messages — their raw output pollutes summarization context.
+        # Only user and assistant turns carry conversational signal.
         if role == "tool":
-            try:
-                content = json.loads(content).get("output", content)
-            except Exception:
-                pass
+            continue
+
+        content = str(msg.get("content", "")).strip()
+        if not content:
+            continue
 
         t = _estimate_tokens(content)
         if tokens + t > budget and current:
@@ -192,16 +188,20 @@ Source: {source}
 
 Summary:"""
 
-    # Prefer M2.7 when forced or when local LLM is unavailable
+    # Prefer M2.7 when forced; fall back to local GGUF if mmx is unavailable
     if force_m2:
-        return _call_mmx(prompt)
+        result = _call_mmx(prompt)
+        if result:
+            return result
+        # mmx unavailable — fall through to local LLM
 
     result = _call_mnemosyne_llm(memory_units, source)
     if result and len(result) >= MIN_SUMMARY_LEN:
         return result
 
     # Escalate to M2.7 if local model produced thin output
-    return _call_mmx(prompt)
+    result = _call_mmx(prompt)
+    return result if result else None
 
 
 def repair_summary(summary: str, memory_units: list[str], fault: str, source: str) -> str | None:

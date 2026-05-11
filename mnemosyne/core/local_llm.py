@@ -503,7 +503,7 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
     # Summarize each chunk individually.
     chunk_summaries = []
     for chunk in chunks:
-        summary = _summarize_chunk(chunk, source=source)
+        summary = _summarize_chunk(chunk, chunk_source=source)
         if summary:
             chunk_summaries.append(summary)
 

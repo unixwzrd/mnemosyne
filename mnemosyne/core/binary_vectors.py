@@ -32,6 +32,19 @@ BITS_PER_BYTE = 8
 BYTES_PER_VECTOR = EMBEDDING_DIM // BITS_PER_BYTE  # 48 bytes for 384 bits
 
 
+# --- Module-level function aliases for beam.py compatibility ---
+# beam.py imports these as: from mnemosyne.core.binary_vectors import maximally_informative_binarization as _mib, hamming_distance as _hamming
+# but they were only defined as class static methods, causing ImportError silently setting them to None.
+def maximally_informative_binarization(embedding) -> bytes:
+    """Module-level alias for BinaryVectorStore.maximally_informative_binarization."""
+    return BinaryVectorStore.maximally_informative_binarization(embedding)
+
+
+def hamming_distance(binary_a: bytes, binary_b: bytes) -> int:
+    """Module-level alias for BinaryVectorStore.hamming_distance."""
+    return BinaryVectorStore.hamming_distance(binary_a, binary_b)
+
+
 class BinaryVectorStore:
     """
     SQLite-native binary vector storage with deterministic retrieval.
