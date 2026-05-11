@@ -36,6 +36,13 @@ if os.environ.get("MNEMOSYNE_DATA_DIR"):
     BANKS_DIR = DEFAULT_DATA_DIR / "banks"
 
 
+def _default_data_dir() -> Path:
+    """Return the current default data directory, honoring runtime env changes."""
+    if os.environ.get("MNEMOSYNE_DATA_DIR"):
+        return Path(os.environ["MNEMOSYNE_DATA_DIR"])
+    return DEFAULT_DATA_DIR
+
+
 class BankManager:
     """
     Manage named memory banks.
@@ -45,7 +52,7 @@ class BankManager:
     """
 
     def __init__(self, data_dir: Path = None):
-        self.data_dir = data_dir or DEFAULT_DATA_DIR
+        self.data_dir = data_dir or _default_data_dir()
         self.banks_dir = self.data_dir / "banks"
         self.banks_dir.mkdir(parents=True, exist_ok=True)
 

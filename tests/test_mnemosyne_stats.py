@@ -14,6 +14,15 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+
+def _safe_count(db, table):
+    """Mirror scripts/mnemosyne-stats.py cnt(): missing table -> 0."""
+    try:
+        return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "mnemosyne-stats.py"
 DB_PATH = Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
 SNAP_DIR = Path.home() / ".hermes" / "mnemosyne" / "stats"
@@ -73,6 +82,73 @@ def test_json_mode():
     assert "working_memory" in data, "Missing working_memory in JSON"
     assert "quality_score" in data, "Missing quality_score in JSON"
     assert isinstance(data["working_memory"]["total"], int), "wm_total not int"
+
+
+def test_json_mode_uses_mnemosyne_data_dir(tmp_path):
+    """Stats should read mnemosyne.db from MNEMOSYNE_DATA_DIR when configured."""
+    home = tmp_path / "home"
+    data_dir = tmp_path / "custom-data"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["MNEMOSYNE_DATA_DIR"] = str(data_dir)
+
+    store = subprocess.run(
+        [sys.executable, "-m", "mnemosyne.cli", "store", "stats data dir probe"],
+        cwd=str(SCRIPT.parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert store.returncode == 0, store.stderr
+    assert (data_dir / "mnemosyne.db").exists()
+    assert not (home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db").exists()
+
+    stats = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json"],
+        cwd=str(SCRIPT.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert stats.returncode == 0, stats.stderr
+    payload = json.loads(stats.stdout)
+    assert "error" not in payload
+    assert payload["working_memory"]["total"] == 1
+
+
+def test_json_mode_empty_mnemosyne_data_dir_falls_back_to_default(tmp_path):
+    home = tmp_path / "home"
+    default_db = home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["MNEMOSYNE_DATA_DIR"] = ""
+
+    store = subprocess.run(
+        [sys.executable, "-m", "mnemosyne.cli", "store", "stats empty data dir probe"],
+        cwd=str(SCRIPT.parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert store.returncode == 0, store.stderr
+    assert default_db.exists()
+
+    stats = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json"],
+        cwd=str(SCRIPT.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert stats.returncode == 0, stats.stderr
+    payload = json.loads(stats.stdout)
+    assert "error" not in payload
+    assert payload["working_memory"]["total"] == 1
+    assert not (SCRIPT.parent / "mnemosyne.db").exists()
 
 def test_save_snapshot():
     code, out, err = run("--save-snapshot")
@@ -237,7 +313,7 @@ def test_db_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM working_memory").fetchone()[0]
+    actual = _safe_count(db, "working_memory")
     db.close()
     reported = data["working_memory"]["total"]
     assert reported == actual, f"WM count mismatch: reported={reported}, actual={actual}"
@@ -248,7 +324,7 @@ def test_episodic_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0]
+    actual = _safe_count(db, "episodic_memory")
     db.close()
     reported = data["episodic"]["total"]
     assert reported == actual, f"Episodic mismatch: reported={reported}, actual={actual}"
@@ -259,7 +335,7 @@ def test_triples_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+    actual = _safe_count(db, "triples")
     db.close()
     reported = data["triples"]["total"]
     assert reported == actual, f"Triples mismatch: reported={reported}, actual={actual}"
@@ -270,7 +346,7 @@ def test_consolidation_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM consolidation_log").fetchone()[0]
+    actual = _safe_count(db, "consolidation_log")
     db.close()
     reported = data["consolidation"]["events"]
     assert reported == actual, f"Consolidation mismatch: reported={reported}, actual={actual}"

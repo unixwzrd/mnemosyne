@@ -89,6 +89,18 @@ if os.environ.get("MNEMOSYNE_DATA_DIR"):
     DEFAULT_DATA_DIR = Path(os.environ.get("MNEMOSYNE_DATA_DIR"))
     DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
 
+
+def _default_data_dir() -> Path:
+    """Return the current default data directory, honoring runtime env changes."""
+    if os.environ.get("MNEMOSYNE_DATA_DIR"):
+        return Path(os.environ["MNEMOSYNE_DATA_DIR"])
+    return DEFAULT_DATA_DIR
+
+
+def _default_db_path() -> Path:
+    """Return the current default DB path, honoring runtime env changes."""
+    return _default_data_dir() / "mnemosyne.db"
+
 # Config
 EMBEDDING_DIM = 384  # bge-small-en-v1.5
 WORKING_MEMORY_MAX_ITEMS = int(os.environ.get("MNEMOSYNE_WM_MAX_ITEMS", "10000"))
@@ -123,7 +135,7 @@ if VEC_TYPE not in ("float32", "int8", "bit"):
 
 def _get_connection(db_path: Path = None) -> sqlite3.Connection:
     """Get thread-local database connection with extensions loaded."""
-    path = db_path or DEFAULT_DB_PATH
+    path = db_path or _default_db_path()
     if not hasattr(_thread_local, 'conn') or _thread_local.conn is None or getattr(_thread_local, 'db_path', None) != str(path):
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -952,7 +964,7 @@ class BeamMemory:
         self.author_id = author_id
         self.author_type = author_type
         self.channel_id = channel_id or session_id  # default channel = session
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or _default_db_path()
         self.use_cloud = use_cloud  # Enable LLM fact extraction during remember()
         self._extraction_client = None  # Lazy-loaded ExtractionClient
         self._extraction_buffer = []  # Buffer for batch extraction

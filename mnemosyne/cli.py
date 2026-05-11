@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import NoReturn
 
 # Data directory — respects MNEMOSYNE_DATA_DIR env var
-DATA_DIR = os.environ.get(
-    "MNEMOSYNE_DATA_DIR",
-    str(Path.home() / ".hermes" / "mnemosyne" / "data"),
+DATA_DIR = os.environ.get("MNEMOSYNE_DATA_DIR") or str(
+    Path.home() / ".hermes" / "mnemosyne" / "data"
 )
 os.makedirs(DATA_DIR, exist_ok=True)
 

@@ -149,13 +149,8 @@ class TestRememberEntityIntegration(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
         _reset_caches()
-        import glob as _glob
-        for f in _glob.glob(self.db_path + "*"):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-        os.rmdir(self.tmpdir)
+        import shutil
+        shutil.rmtree(self.tmpdir)
         if "MNEMOSYNE_DATA_DIR" in os.environ:
             del os.environ["MNEMOSYNE_DATA_DIR"]
 
@@ -186,13 +181,8 @@ class TestEndToEndEntityWorkflow(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
         _reset_caches()
-        import glob as _glob
-        for f in _glob.glob(self.db_path + "*"):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-        os.rmdir(self.tmpdir)
+        import shutil
+        shutil.rmtree(self.tmpdir)
         if "MNEMOSYNE_DATA_DIR" in os.environ:
             del os.environ["MNEMOSYNE_DATA_DIR"]
 

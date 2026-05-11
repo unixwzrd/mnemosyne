@@ -23,13 +23,19 @@ What it does:
 """
 
 import argparse
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 # Current canonical path (matches mnemosyne.core.beam DEFAULT_DB_PATH)
-# NOTE: On Fly.io and other ephemeral VMs, ~/.hermes is the only persisted path.
-CANONICAL_DB = Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+# NOTE: On Fly.io and other ephemeral VMs, ~/.hermes is the only persisted path
+# unless MNEMOSYNE_DATA_DIR explicitly points elsewhere.
+CANONICAL_DATA_DIR = Path(
+    os.environ.get("MNEMOSYNE_DATA_DIR")
+    or Path.home() / ".hermes" / "mnemosyne" / "data"
+)
+CANONICAL_DB = CANONICAL_DATA_DIR / "mnemosyne.db"
 
 # Legacy / ephemeral paths to scan and migrate from
 LEGACY_CANDIDATES = [

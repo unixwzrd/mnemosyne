@@ -13,11 +13,15 @@ Usage:
     python3 mnemosyne-stats.py --trends     # Show trend data only
 """
 
+import os
 import sqlite3, sys, json
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+DB_PATH = Path(
+    os.environ.get("MNEMOSYNE_DATA_DIR")
+    or Path.home() / ".hermes" / "mnemosyne" / "data"
+) / "mnemosyne.db"
 WIKI_PATH = Path.home() / "wiki"
 SNAPSHOT_DIR = Path.home() / ".hermes" / "mnemosyne" / "stats"
 W = 60

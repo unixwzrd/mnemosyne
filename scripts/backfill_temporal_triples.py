@@ -12,6 +12,7 @@ Usage:
 This is a one-time migration script for Mnemosyne v1.13.0.
 """
 
+import os
 import sqlite3
 import argparse
 from pathlib import Path
@@ -21,8 +22,10 @@ from typing import Tuple
 
 def get_db_path() -> Path:
     """Resolve Mnemosyne database path."""
-    default = Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
-    return Path(default)
+    default_dir = os.environ.get("MNEMOSYNE_DATA_DIR") or (
+        Path.home() / ".hermes" / "mnemosyne" / "data"
+    )
+    return Path(default_dir) / "mnemosyne.db"
 
 
 def count_missing_triples(conn: sqlite3.Connection) -> Tuple[int, int]:
