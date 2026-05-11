@@ -290,15 +290,38 @@ class PolyphonicRecallEngine:
                             dist = rowid_to_dist.get(row["rowid"])
                             if dist is None:
                                 continue
-                            # 1.0 - distance yields cosine-style
-                            # similarity for int8/bit (after the
-                            # quantize). Bit-Hamming returns a count;
-                            # we don't try to normalize across types
-                            # here — ordering within a single voice
-                            # call is preserved because vec_type
-                            # doesn't change mid-call. Downstream RRF
-                            # uses rank position, not score magnitude.
-                            sim = 1.0 - float(dist)
+                            # Normalize sqlite-vec distances to a
+                            # cosine-similarity-compatible [0, 1] scale
+                            # so cross-tier dedup against the WM tier's
+                            # numpy cosine values is meaningful.
+                            #
+                            # /review (4-source: Codex structured P2,
+                            # Codex adversarial MEDIUM, Claude
+                            # CRITICAL, perf HIGH) caught the pre-fix
+                            # behavior of using `1.0 - distance`
+                            # directly: bit-type Hamming distance is
+                            # an int in [0, EMBEDDING_DIM_BITS], so
+                            # the score went heavily negative
+                            # (~-383). WM cosine is in [-1, 1].
+                            # Dedup at `sim > existing.score` then
+                            # always preferred WM hits over EM
+                            # sqlite-vec hits, silently inverting the
+                            # tier-priority semantics for bit-quantized
+                            # vectors. Normalize per vec_type:
+                            #   bit:    1 - dist/EMBEDDING_DIM_BITS
+                            #   int8:   1 - dist/2  (cosine_dist in
+                            #                       [0, 2] for unit
+                            #                       vectors)
+                            #   raw f32: 1/(1+dist) (L2 → (0, 1])
+                            raw_dist = float(dist)
+                            if vec_type == "bit":
+                                # 384 dims for MiniLM-class embeddings
+                                # (matches binary_vectors.EMBEDDING_DIM)
+                                sim = 1.0 - (raw_dist / 384.0)
+                            elif vec_type == "int8":
+                                sim = 1.0 - (raw_dist / 2.0)
+                            else:
+                                sim = 1.0 / (1.0 + raw_dist)
                             existing = by_id.get(mid)
                             if existing is None or sim > existing.score:
                                 by_id[mid] = RecallResult(
@@ -307,13 +330,30 @@ class PolyphonicRecallEngine:
                                     voice="vector",
                                     metadata={
                                         "similarity": sim,
+                                        "raw_distance": raw_dist,
+                                        "vec_type": vec_type,
                                         "embedding_tier": "episodic",
                                         "backend": "sqlite-vec",
                                     },
                                 )
-                        em_consumed_via_vec_episodes = True
-            except (ImportError, sqlite3.OperationalError, ValueError):
-                # Any failure in the fast path: fall through to numpy.
+                        # Only mark EM consumed when the fast path
+                        # actually produced results. If all top-60
+                        # ANN hits failed the superseded/valid_until
+                        # filter (or orphaned the JOIN), fall through
+                        # to the numpy path so it can scan up to
+                        # vec_limit and find valid rows beyond the
+                        # truncated ANN candidate set. /review (4-source)
+                        # caught the silent EM-starvation regression.
+                        em_consumed_via_vec_episodes = bool(em_rows_via_vec)
+            except (ImportError, AttributeError,
+                    sqlite3.Error, ValueError, TypeError) as exc:
+                # Broader catch than the original tuple — partial
+                # imports can surface as AttributeError, corrupt DB
+                # state as sqlite3.DatabaseError (other Error
+                # subclasses), and quantize edge cases as TypeError.
+                # /review (Claude MEDIUM) caught the narrow filter
+                # silently hiding unexpected failure modes. Fall
+                # through to the numpy path on any of them.
                 em_consumed_via_vec_episodes = False
 
             # --- EM tier — numpy fallback (or when sqlite-vec absent) ---
@@ -344,7 +384,13 @@ class PolyphonicRecallEngine:
                         vec_norm = float(np.linalg.norm(vec))
                         if vec_norm == 0.0:
                             continue
-                        sim = float(np.dot(query_unit, vec / vec_norm))
+                        cos_sim = float(np.dot(query_unit, vec / vec_norm))
+                        # Normalize cosine to [0, 1] so cross-path dedup
+                        # against the sqlite-vec fast path (which now
+                        # also produces [0, 1] scores) compares apples
+                        # to apples. /review (4-source) caught the
+                        # raw-cosine-vs-bit-Hamming inversion bug.
+                        sim = (cos_sim + 1.0) / 2.0
                         existing = by_id.get(memory_id)
                         if existing is None or sim > existing.score:
                             by_id[memory_id] = RecallResult(
@@ -353,6 +399,7 @@ class PolyphonicRecallEngine:
                                 voice="vector",
                                 metadata={
                                     "similarity": sim,
+                                    "cosine_similarity": cos_sim,
                                     "embedding_tier": "episodic",
                                     "backend": "memory_embeddings",
                                 },
@@ -390,7 +437,10 @@ class PolyphonicRecallEngine:
                     vec_norm = float(np.linalg.norm(vec))
                     if vec_norm == 0.0:
                         continue
-                    sim = float(np.dot(query_unit, vec / vec_norm))
+                    cos_sim = float(np.dot(query_unit, vec / vec_norm))
+                    # Normalize cosine to [0, 1] — same rationale as EM
+                    # numpy path above (cross-path dedup parity).
+                    sim = (cos_sim + 1.0) / 2.0
                     existing = by_id.get(memory_id)
                     if existing is None or sim > existing.score:
                         by_id[memory_id] = RecallResult(
@@ -399,6 +449,7 @@ class PolyphonicRecallEngine:
                             voice="vector",
                             metadata={
                                 "similarity": sim,
+                                "cosine_similarity": cos_sim,
                                 "embedding_tier": "working",
                                 "backend": "memory_embeddings",
                             },

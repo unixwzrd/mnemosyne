@@ -682,6 +682,150 @@ class TestReviewHardening:
         )
         assert "em-live-vec" in ids
 
+    def test_em_starvation_falls_back_when_all_top_60_filtered(
+        self, temp_db
+    ):
+        """4-source /review convergence: when sqlite-vec returns
+        non-empty ANN hits but ALL of them fail the
+        superseded_by/valid_until filter at the rowid JOIN, the
+        fast path must NOT mark EM as consumed — the numpy fallback
+        needs to fire so it can find valid candidates beyond the
+        top-60 ANN truncation."""
+        from mnemosyne.core.beam import _vec_available, _vec_insert
+
+        beam = BeamMemory(session_id="e5a-starve", db_path=temp_db)
+        if not _vec_available(beam.conn):
+            pytest.skip("sqlite-vec not available in this environment")
+
+        target_vec = _unit_vec(seed=950)
+
+        # Seed several superseded EM rows that vec_episodes will rank
+        # at the top — the fast path will fetch them all, the rowid
+        # JOIN will filter them all out, and (post-fix) the numpy
+        # fallback should still fire.
+        for i in range(3):
+            mid = f"em-doomed-{i}"
+            beam.conn.execute(
+                "INSERT INTO episodic_memory (id, content, source, "
+                "timestamp, importance, superseded_by) "
+                f"VALUES ('{mid}', 'doomed-{i}', 'test', "
+                "datetime('now'), 0.5, 'em-valid')"
+            )
+            rowid = beam.conn.execute(
+                "SELECT rowid FROM episodic_memory WHERE id = ?", (mid,)
+            ).fetchone()[0]
+            _seed_embedding(beam.conn, mid, target_vec)
+            _vec_insert(beam.conn, rowid, target_vec.tolist())
+
+        # Seed a valid EM row that vec_episodes won't see (no
+        # vec_episodes entry) — only memory_embeddings has it. The
+        # numpy fallback should surface this.
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, "
+            "timestamp, importance) "
+            "VALUES ('em-valid', 'survivor', 'test', "
+            "datetime('now'), 0.5)"
+        )
+        _seed_embedding(beam.conn, "em-valid", target_vec)
+        beam.conn.commit()
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(target_vec)
+        ids = {r.memory_id for r in results}
+        # The fast path's top-60 were ALL filtered out. Numpy
+        # fallback must have fired to find em-valid.
+        assert "em-valid" in ids, (
+            "starvation regression: when ANN top-N all fail filters, "
+            "numpy fallback must still run to surface valid rows"
+        )
+        # And the doomed rows must NOT appear in the final results
+        # (filtered at both layers).
+        for i in range(3):
+            assert f"em-doomed-{i}" not in ids
+
+    def test_orphan_vec_episodes_row_doesnt_starve_em_recall(
+        self, temp_db
+    ):
+        """Defense: vec_episodes can carry rowids that have been
+        DELETEd from episodic_memory (e.g., import_session path at
+        beam.py:3991). The rowid JOIN drops them cleanly; the numpy
+        fallback should still surface valid EM rows that have
+        memory_embeddings entries but no (or orphaned) vec_episodes
+        entries."""
+        from mnemosyne.core.beam import _vec_available, _vec_insert
+
+        beam = BeamMemory(session_id="e5a-orphan", db_path=temp_db)
+        if not _vec_available(beam.conn):
+            pytest.skip("sqlite-vec not available in this environment")
+
+        target_vec = _unit_vec(seed=951)
+
+        # Insert a row, capture its rowid, then DELETE the row but
+        # leave its vec_episodes entry — simulates the orphan state
+        # that DELETE-without-cascade can produce.
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, "
+            "timestamp, importance) "
+            "VALUES ('em-ghost', 'ghost', 'test', datetime('now'), 0.5)"
+        )
+        ghost_rowid = beam.conn.execute(
+            "SELECT rowid FROM episodic_memory WHERE id = ?", ("em-ghost",)
+        ).fetchone()[0]
+        _vec_insert(beam.conn, ghost_rowid, target_vec.tolist())
+        beam.conn.execute(
+            "DELETE FROM episodic_memory WHERE id = ?", ("em-ghost",)
+        )
+        # vec_episodes still has the rowid; episodic_memory does not.
+
+        # A valid row that should still surface via numpy fallback.
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, "
+            "timestamp, importance) "
+            "VALUES ('em-alive', 'alive', 'test', datetime('now'), 0.5)"
+        )
+        _seed_embedding(beam.conn, "em-alive", target_vec)
+        beam.conn.commit()
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(target_vec)
+        ids = {r.memory_id for r in results}
+        assert "em-alive" in ids, (
+            "orphan-vec regression: numpy fallback skipped after "
+            "vec_episodes top-K all dropped via missing JOIN"
+        )
+        assert "em-ghost" not in ids
+
+    def test_scores_normalized_to_zero_one_across_paths(self, temp_db):
+        """All vector voice scores live in [0, 1] regardless of
+        which retrieval backend served them (sqlite-vec
+        bit/int8/float32 OR numpy cosine on memory_embeddings).
+        This is the cross-tier-dedup-parity contract that closes
+        the bit-Hamming poisoning bug."""
+        beam = BeamMemory(session_id="e5a-norm", db_path=temp_db)
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, "
+            "timestamp, importance) "
+            "VALUES ('em-norm', 'x', 'test', datetime('now'), 0.5)"
+        )
+        beam.conn.execute(
+            "INSERT INTO working_memory (id, content, source, "
+            "timestamp, session_id, importance) "
+            "VALUES ('wm-norm', 'x', 'test', datetime('now'), "
+            "'e5a-norm', 0.5)"
+        )
+        target_vec = _unit_vec(seed=952)
+        _seed_embedding(beam.conn, "em-norm", target_vec)
+        _seed_embedding(beam.conn, "wm-norm", target_vec)
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(target_vec)
+        for r in results:
+            assert 0.0 <= r.score <= 1.0, (
+                f"score {r.score} from backend "
+                f"{r.metadata.get('backend')} outside [0, 1] — "
+                "cross-path dedup parity broken"
+            )
+
     def test_module_import_works_when_numpy_absent(self):
         """`from __future__ import annotations` should let
         polyphonic_recall.py import even if numpy fails to load —
