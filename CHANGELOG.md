@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [Unreleased]
+
+### Security
+
+**C25 — DeltaSync table + column allowlist**
+- `DeltaSync.compute_delta` / `apply_delta` / `sync_to` / `sync_from` now validate the `table` kwarg against `ALLOWED_DELTA_TABLES` (`{"working_memory", "episodic_memory"}`) at the public method boundary. Anything outside the allowlist raises `ValueError`. Pre-fix the kwarg flowed straight into f-string SQL — a caller passing `table="working_memory; DROP TABLE x; --"` could execute arbitrary SQL against the local DB.
+- `apply_delta` filters every key in incoming peer-supplied delta rows against the destination table's live schema (PRAGMA-derived, cached per table). Unknown columns are silently dropped and counted in `stats["filtered_keys"]`. Pre-fix the keys went straight into `UPDATE table SET <key> = ?` / `INSERT INTO table (<keys>)` — a hostile peer could smuggle SQL through the column-name slot.
+- Maintainer just wired streaming emit live in commit `b2a7fae` (issue #64), raising the practical relevance of the hardening: production callers now have real reasons to construct deltas across the wire.
+
+### Changed
+
+**DeltaSync stats output now includes `filtered_keys`**
+- `apply_delta` return shape: `{"inserted": N, "updated": N, "skipped": N, "filtered_keys": N}`. New `filtered_keys` counter exposes peer-supplied keys that were rejected by the schema column allowlist. Operators can spot a misconfigured peer (typo'd column names) or a hostile peer (injection attempts) by watching this counter.
+
+### Documentation
+
+**`docs/api-reference.md`: corrected MemoryStream and DeltaSync examples** (originally PR #49 by @kohai-ut, rolled in here)
+- `MemoryStream`: examples now use the real API — `emit(MemoryEvent(...))`, `on(event_type, callback)`, `on_any(callback)`, `listen()` iterator. Pre-fix the docs showed `push(...)`, `on_event(...)`, and direct iteration — none of which exist.
+- `DeltaSync`: examples now show the peer_id-based call shape (`compute_delta(peer_id)`, `apply_delta(peer_id, delta)`, `sync_to(peer_id)`, `sync_from(peer_id, delta)`). Pre-fix the docs showed `compute_delta()` / `apply_delta(delta)` / `sync_to(other_mnemosyne)` — wrong signatures.
+- New section on the `ALLOWED_DELTA_TABLES` allowlist + column filtering on apply (the security hardening above).
+
 ## [2.5] — 2026-05-10
 
 ### Added

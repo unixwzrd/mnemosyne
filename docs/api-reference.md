@@ -369,6 +369,7 @@ delta = sync.compute_delta(peer_id)
 
 # Apply a delta received from that peer
 stats = sync.apply_delta(peer_id, delta)
+# stats == {"inserted": N, "updated": N, "skipped": N, "filtered_keys": N}
 
 # Package a delta for transport to a peer
 outgoing = sync.sync_to(peer_id)
@@ -376,6 +377,26 @@ outgoing = sync.sync_to(peer_id)
 # Apply a received delta and update the peer checkpoint
 result = sync.sync_from(peer_id, incoming_delta)
 ```
+
+**Allowed tables.** `compute_delta`, `apply_delta`, `sync_to`, and
+`sync_from` accept `table` as a keyword argument. Only the values in
+`ALLOWED_DELTA_TABLES` (`{"working_memory", "episodic_memory"}`) are
+accepted; anything else raises `ValueError`. The allowlist is the
+trust boundary against SQL injection via the `table` kwarg — see
+C25 in the memory-contract ledger. To extend it, edit
+`ALLOWED_DELTA_TABLES` in `mnemosyne/core/streaming.py` (deliberate
+change, not a silent ride-along on a stray kwarg).
+
+**Column filtering on apply.** `apply_delta` filters every key in the
+incoming delta rows against the destination table's live schema.
+Keys that don't match a real column are silently dropped and counted
+in `stats["filtered_keys"]`. This handles two cases at once:
+typo'd column names from a misconfigured peer (they get filtered
+instead of crashing the batch), and malicious column names from a
+hostile peer (they can't smuggle SQL through the column-name slot).
+Reserved keys (`id`, `rowid`, `timestamp`, `created_at`) are also
+filtered out on the UPDATE path so a peer can't rewrite the
+historical lifecycle metadata of an existing row.
 
 ---
 
