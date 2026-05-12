@@ -23,10 +23,12 @@ Conflict resolution:
 """
 
 import contextlib
+import hashlib
 import logging
 import sqlite3
 import json
 import threading
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
@@ -535,12 +537,25 @@ class VeracityConsolidator:
                 )
                 return
 
-            # Determine losing fact
-            losing_id = (
-                conflict["fact_b_id"]
-                if winning_fact_id == conflict["fact_a_id"]
-                else conflict["fact_a_id"]
-            )
+            # Reject ambiguous calls: the winning id must match one of
+            # the conflict's stored fact ids exactly. Pre-fix the
+            # comparison silently defaulted to fact_b_id as the loser
+            # whenever winning_fact_id != fact_a_id, which produced the
+            # wrong supersession when callers passed a derived-but-stale
+            # id (legacy/new format divergence).
+            fact_a_id = conflict["fact_a_id"]
+            fact_b_id = conflict["fact_b_id"]
+            if winning_fact_id == fact_a_id:
+                losing_id = fact_b_id
+            elif winning_fact_id == fact_b_id:
+                losing_id = fact_a_id
+            else:
+                logger.warning(
+                    "resolve_conflict: winning_fact_id %r matches neither "
+                    "fact_a_id %r nor fact_b_id %r; declining to resolve",
+                    winning_fact_id, fact_a_id, fact_b_id,
+                )
+                return
 
             # Mark as superseded
             now = datetime.now().isoformat()
