@@ -164,6 +164,7 @@ except ImportError:
     np = None
 
 from mnemosyne.core import embeddings as _embeddings
+from mnemosyne.core import plugins as _plugins
 
 # sqlite-vec optional dependency
 try:
@@ -222,7 +223,11 @@ def _default_db_path() -> Path:
     return _default_data_dir() / "mnemosyne.db"
 
 # Config
-EMBEDDING_DIM = 384  # bge-small-en-v1.5
+try:
+    _emb_dim = int(os.environ.get("MNEMOSYNE_EMBEDDING_DIM", "384"))
+    EMBEDDING_DIM = _emb_dim if _emb_dim > 0 else 384
+except ValueError:
+    EMBEDDING_DIM = 384  # bge-small-en-v1.5
 WORKING_MEMORY_MAX_ITEMS = int(os.environ.get("MNEMOSYNE_WM_MAX_ITEMS", "10000"))
 WORKING_MEMORY_TTL_HOURS = int(os.environ.get("MNEMOSYNE_WM_TTL_HOURS", "24"))
 EPISODIC_RECALL_LIMIT = int(os.environ.get("MNEMOSYNE_EP_LIMIT", "50000"))
@@ -4514,21 +4519,12 @@ class BeamMemory:
             llm_succeeded = False
             if local_llm.llm_available():
                 # --- Optional pre-compression for small local LLMs ---
-                if os.environ.get("MNEMOSYNE_USE_CAVEMAN", "").lower() in ("1", "true", "yes"):
-                    try:
-                        from rust_cave_001 import compress
-                        compressed = []
-                        for line in lines:
-                            try:
-                                c = compress(line)
-                                compressed.append(c if len(c) > 2 else line)
-                            except Exception:
-                                compressed.append(line)
-                        lines = compressed
-                    except ImportError:
-                        pass  # rust_cave_001 not installed, skip gracefully
-                    except Exception:
-                        pass  # Compression failed non-fatally, use original lines
+                # Uses CompressionPlugin (registered in plugins.py). The env
+                # var MNEMOSYNE_USE_CAVEMAN still works as a deprecated
+                # fallback — see CompressionPlugin for deprecation warning.
+                compression_plugin = _plugins.get_manager().get_plugin("compression")
+                if compression_plugin and compression_plugin.enabled:
+                    lines = compression_plugin.compress_lines(lines)
 
                 chunks = local_llm.chunk_memories_by_budget(lines, source=source)
                 if chunks:
