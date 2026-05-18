@@ -109,7 +109,7 @@ Mnemosyne uses **Simple Versioning**: `MAJOR.MINOR`
 **`mnemosyne/__init__.py`** is the ONLY place the version string lives:
 
 ```python
-__version__ = "2.8.0"
+__version__ = "3.0.0"
 ```
 
 `pyproject.toml` reads it dynamically:
