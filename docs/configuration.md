@@ -44,19 +44,58 @@ This path defaults to `~/.hermes/` because Hermes persists that directory across
 
 Affects how recent memories are scored relative to older ones during recall.
 
-## Vector Compression
+## Vector Compression & Embedding Model
 
 ```bash
 MNEMOSYNE_VEC_TYPE=int8
 ```
 
-| Value | Size per vector | Description |
+| Value | Size per vector (384-dim) | Description |
 |---|---|---|
 | `float32` | 1,536 bytes | Full precision. Largest, most accurate. |
 | `int8` | 384 bytes | **Default.** Good balance of size vs. accuracy. |
-| `bit` | 48 bytes | 32× smaller than float32. Fastest, lowest precision. |
+| `bit` | 48 bytes | 32x smaller than float32. Fastest, lowest precision. |
 
-All values use 384-dimensional vectors (bge-small-en-v1.5 embedding model).
+Default vectors are 384-dimensional (bge-small-en-v1.5 embedding model).
+
+### Custom Embedding Models
+
+Switch the embedding model via env var:
+
+```bash
+# Chinese embeddings
+MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+
+# Multilingual embeddings (100+ languages)
+MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-m3
+
+# Or any fastembed-supported model
+MNEMOSYNE_EMBEDDING_MODEL=intfloat/multilingual-e5-base
+```
+
+The embedding dimension is **auto-detected** from the model name. Supported models with known dimensions:
+
+| Model | Dims | Language |
+|---|---|---|
+| `BAAI/bge-small-en-v1.5` | 384 | English |
+| `BAAI/bge-base-en-v1.5` | 768 | English |
+| `BAAI/bge-small-zh-v1.5` | 512 | Chinese |
+| `BAAI/bge-base-zh-v1.5` | 768 | Chinese |
+| `BAAI/bge-large-zh-v1.5` | 1,024 | Chinese |
+| `BAAI/bge-m3` | 1,024 | Multilingual |
+| `intfloat/multilingual-e5-small` | 384 | Multilingual |
+| `intfloat/multilingual-e5-base` | 768 | Multilingual |
+| `intfloat/multilingual-e5-large` | 1,024 | Multilingual |
+| `openai/text-embedding-3-small` | 1,536 | API |
+| `openai/text-embedding-3-large` | 3,072 | API |
+
+For unsupported models, set the dimension explicitly:
+
+```bash
+MNEMOSYNE_EMBEDDING_DIM=768
+```
+
+> **Warning:** Changing the embedding model after data has been stored will cause a dimension mismatch. The vec0 virtual table is locked to the dimension it was created with. To switch models, delete and re-create the database, or run the migration tool.
 
 ## LLM Consolidation
 

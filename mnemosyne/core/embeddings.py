@@ -45,16 +45,41 @@ def _is_api_model(model_name: str) -> bool:
 
 
 def _get_embedding_dim(model_name: str) -> int:
-    """Return the embedding dimension for a given model."""
+    """Return the embedding dimension for a given model.
+
+    Supports English, Chinese, and multilingual embedding models.
+    Falls back to 384 (bge-small dimension) for unknown models.
+    Override with MNEMOSYNE_EMBEDDING_DIM env var for unsupported models.
+    """
     dims = {
+        # --- English BGE ---
         "BAAI/bge-small-en-v1.5": 384,
         "BAAI/bge-base-en-v1.5": 768,
         "BAAI/bge-large-en-v1.5": 1024,
+        # --- Chinese BGE ---
+        "BAAI/bge-small-zh-v1.5": 512,
+        "BAAI/bge-base-zh-v1.5": 768,
+        "BAAI/bge-large-zh-v1.5": 1024,
+        # --- Multilingual E5 ---
+        "intfloat/multilingual-e5-small": 384,
+        "intfloat/multilingual-e5-base": 768,
+        "intfloat/multilingual-e5-large": 1024,
+        # --- Multilingual BGE ---
+        "BAAI/bge-m3": 1024,            # M3: multilingual (100+ langs), 1024-dim
+        "BAAI/bge-multilingual-gemma2": 3584,
+        # --- OpenAI ---
         "openai/text-embedding-3-small": 1536,
         "openai/text-embedding-3-large": 3072,
         "text-embedding-3-small": 1536,
         "text-embedding-3-large": 3072,
     }
+    # Check env override first
+    env_dim = os.environ.get("MNEMOSYNE_EMBEDDING_DIM")
+    if env_dim is not None:
+        try:
+            return int(env_dim)
+        except (ValueError, TypeError):
+            pass
     return dims.get(model_name, 384)
 
 
