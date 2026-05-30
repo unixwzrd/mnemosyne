@@ -36,8 +36,10 @@ _FASTEMBED_AVAILABLE = np is not None and TextEmbedding is not None
 _FASTEMBED_CACHE_DIR = os.path.join(os.path.expanduser("~/.hermes"), "cache", "fastembed")
 
 # --- OpenAI-compatible API ---
-_OPENAI_API_KEY = os.environ.get("MNEMOSYNE_EMBEDDING_API_KEY", os.environ.get("OPENROUTER_API_KEY", os.environ.get("OPENAI_API_KEY", "")))
-_OPENAI_BASE_URL = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
+# Mnemosyne embedding config is independent of general OpenRouter/OpenAI settings.
+# Embedding models may use local llama.cpp, OpenAI, Anthropic, or any other provider.
+_OPENAI_API_KEY = os.environ.get("MNEMOSYNE_EMBEDDING_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+_OPENAI_BASE_URL = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
 
 # --- Model selection ---
 _DEFAULT_MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
@@ -49,9 +51,9 @@ def _is_api_model(model_name: str) -> bool:
     """Check if the model should use the OpenAI-compatible API."""
     if model_name.startswith("openai/") or "text-embedding" in model_name or model_name.startswith("text-embedding"):
         return True
-    # Custom endpoint: if OPENROUTER_BASE_URL or MNEMOSYNE_EMBEDDING_API_URL is set to a non-OpenRouter URL,
+    # Custom endpoint: if MNEMOSYNE_EMBEDDING_API_URL is set to a non-OpenRouter URL,
     # assume the user has their own API server and any model name should route there.
-    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", os.environ.get("OPENROUTER_BASE_URL", ""))
+    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "")
     if base_url and "openrouter.ai" not in base_url:
         return True
     # Explicit opt-in for non-OpenAI embedding models hosted on OpenRouter
@@ -129,12 +131,12 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
     """Embed texts via OpenAI-compatible API (OpenRouter or custom endpoint)."""
     global _API_CALL_COUNT
     # Require API key for OpenRouter; custom endpoints may not need one.
-    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", os.environ.get("OPENROUTER_BASE_URL", _OPENAI_BASE_URL))
+    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
     is_custom = "openrouter.ai" not in base_url
     if not is_custom and not _OPENAI_API_KEY:
         return None
 
-    url = f"{_OPENAI_BASE_URL.rstrip('/')}/embeddings"
+    url = f"{base_url.rstrip('/')}/embeddings"
     payload = json.dumps({
         "model": _DEFAULT_MODEL,
         "input": texts,
@@ -178,7 +180,7 @@ def available() -> bool:
         return False
     if _is_api_model(_DEFAULT_MODEL):
         # Custom endpoints (non-OpenRouter) may not require an API key
-        base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", os.environ.get("OPENROUTER_BASE_URL", ""))
+        base_url = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "")
         if base_url and "openrouter.ai" not in base_url:
             return True
         return bool(_OPENAI_API_KEY)
