@@ -3102,7 +3102,7 @@ class BeamMemory:
         cursor = self.conn.cursor()
         try:
             cursor.execute(
-                "DELETE FROM working_memory WHERE id = ? AND session_id = ?",
+                "DELETE FROM working_memory WHERE id = ? AND (session_id = ? OR scope = 'global')",
                 (memory_id, self.session_id),
             )
             wm_rows = cursor.rowcount
