@@ -1,5 +1,5 @@
 name: hermes-mnemosyne
-version: 3.1.0
+version: 0.1.1
 description: "Native local memory for Hermes — SQLite with vector search, FTS5 hybrid ranking, episodic consolidation, and temporal triples. Zero cloud. Zero latency. Deployed via plugin system."
 author: Abdias J
 provides_tools:
