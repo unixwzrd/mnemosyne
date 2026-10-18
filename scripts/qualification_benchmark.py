@@ -135,8 +135,10 @@ def benchmark(samples=100, corpus_size=128):
 
         def validate(name, result):
             if name == "recall_match":
-                assert len(result) == min(5, corpus_size // 8), result
-                assert len(set(result)) == len(result) and set(result) <= expected_match, result
+                assert len(result) == len(expected_match) and set(result) == expected_match, result
+                # Equal-relevance ties may have a different order in fresh stores.
+                # Compare the full known match set, not a varying top-k subset.
+                return sorted(result)
             elif name == "recall_no_lexical_match":
                 assert result == [], result
             elif name == "reference_lookup":
@@ -156,7 +158,7 @@ def benchmark(samples=100, corpus_size=128):
 
         operations = {
             "recall_match": lambda: [row["content"] for row in beam.recall(
-                "sector3", top_k=min(5, corpus_size // 8), _track_recall=False,
+                "sector3", top_k=len(expected_match), _track_recall=False,
             )],
             "recall_no_lexical_match": lambda: [row["content"] for row in beam.recall(
                 "nonexistentquasar", top_k=5, _track_recall=False,

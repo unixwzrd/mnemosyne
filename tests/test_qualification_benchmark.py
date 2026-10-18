@@ -2,6 +2,7 @@
 
 import json
 import importlib.util
+import hashlib
 import os
 import subprocess
 import sys
@@ -20,7 +21,7 @@ def test_offline_benchmark_reports_samples_and_invariants(tmp_path):
         "PYTHONPATH": str(SCRIPT.parents[1]),
     }
     completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--samples", "20", "--corpus-size", "32"],
+        [sys.executable, str(SCRIPT), "--samples", "20", "--corpus-size", "128"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -29,7 +30,13 @@ def test_offline_benchmark_reports_samples_and_invariants(tmp_path):
     assert report["network_attempts"] == 0
     assert report["backend_tripwires"]
     assert report["imported_sources"]["mnemosyne.core.beam"]["path"] == "mnemosyne/core/beam.py"
-    assert report["working_rows"] == 32 + report["writes_including_warmup"]
+    assert report["working_rows"] == 128 + report["writes_including_warmup"]
+    expected_matches = sorted(
+        f"Synthetic engine decision {i}: component sector3 uses sqlite."
+        for i in range(128) if i % 8 == 3
+    )
+    expected_digest = hashlib.sha256(json.dumps(expected_matches, sort_keys=True).encode()).hexdigest()
+    assert report["operations"]["recall_match"]["output_sha256"] == expected_digest
     assert report["protected_mode"] == "not implemented; not benchmarked"
     assert len(report["operations"]) == 4
     for operation in report["operations"].values():
