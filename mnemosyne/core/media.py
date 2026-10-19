@@ -40,6 +40,7 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -635,6 +636,23 @@ _ASSET_DETAIL_COLUMNS: Tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class SourceRevisionWrite:
+    """Result of explicit source-revision registration, not byte verification."""
+
+    revision_id: str
+    status: str
+
+
+def _revision_text(value: str, name: str, maximum: int) -> str:
+    if (
+        not isinstance(value, str) or not value.strip() or len(value) > maximum
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError(f"{name} must be nonblank text of at most {maximum} characters without control characters")
+    return value
+
+
 class MediaStore:
     """Handle over ``media_assets`` and ``media_moments``.
 
@@ -666,6 +684,139 @@ class MediaStore:
         else:
             init_media(self.db_path)
             self.conn = _get_conn(self.db_path)
+
+    # Revision metadata is opt-in. Do not add its schema during legacy opens.
+    def register_source_revision(
+        self, asset_id: str, *, revision_key: str, content_hash: str,
+        representation: str = "original-bytes", byte_size: Optional[int] = None,
+        predecessor_revision_id: Optional[str] = None,
+        archive_locator: Optional[str] = None,
+    ) -> "SourceRevisionWrite":
+        """Append asserted byte-revision metadata without fetching or replacing bytes.
+
+        The asset-local key identifies an event, not a URI or content hash.
+        Reusing a key with different metadata is a conflict, never an update.
+        A savepoint preserves any enclosing caller transaction.
+        """
+        asset_id = _revision_text(asset_id, "asset_id", 512)
+        revision_key = _revision_text(revision_key, "revision_key", 256)
+        representation = _revision_text(representation, "representation", 128)
+        if not isinstance(content_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", content_hash):
+            raise ValueError("content_hash must be a SHA-256 hex digest")
+        content_hash = content_hash.lower()
+        if byte_size is not None and (
+            type(byte_size) is not int or not 0 <= byte_size <= 2**63 - 1
+        ):
+            raise ValueError("byte_size must be a nonnegative SQLite integer or None")
+        if predecessor_revision_id is not None:
+            predecessor_revision_id = _revision_text(predecessor_revision_id, "predecessor_revision_id", 256)
+        if archive_locator is not None:
+            archive_locator = _revision_text(archive_locator, "archive_locator", 4096)
+        identity = json.dumps(["v1", asset_id, revision_key], separators=(",", ":"))
+        revision_id = "revision:sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if predecessor_revision_id == revision_id:
+            raise ValueError("a revision cannot be its own predecessor")
+        expected = (
+            asset_id, revision_key, content_hash, representation, byte_size,
+            predecessor_revision_id, archive_locator,
+        )
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            # Schema reads can themselves take a read lock. Obtain write
+            # intent before DDL, not just before the parent validation reads.
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("SAVEPOINT media_revision_write")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS media_source_revisions (
+                    revision_id TEXT PRIMARY KEY,
+                    asset_id TEXT NOT NULL,
+                    revision_key TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    representation TEXT NOT NULL,
+                    byte_size INTEGER,
+                    predecessor_revision_id TEXT,
+                    archive_locator TEXT,
+                    digest_status TEXT NOT NULL DEFAULT 'asserted',
+                    registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(asset_id, revision_key)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_source_revision_asset "
+                "ON media_source_revisions(asset_id, registered_at, revision_id)"
+            )
+            cursor = self.conn.execute("""
+                INSERT INTO media_source_revisions (
+                    revision_id, asset_id, revision_key, content_hash, representation,
+                    byte_size, predecessor_revision_id, archive_locator
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id, revision_key) DO NOTHING
+            """, (revision_id, *expected))
+            if self.conn.execute(
+                "SELECT 1 FROM media_assets WHERE asset_id = ?", (asset_id,),
+            ).fetchone() is None:
+                raise ValueError("no media_assets row for revision parent")
+            if predecessor_revision_id is not None:
+                parent = self.conn.execute(
+                    "SELECT asset_id FROM media_source_revisions WHERE revision_id = ?",
+                    (predecessor_revision_id,),
+                ).fetchone()
+                if parent is None or parent[0] != asset_id:
+                    raise ValueError("predecessor must be an existing revision of the same asset")
+            row = self.conn.execute("""
+                SELECT asset_id, revision_key, content_hash, representation, byte_size,
+                       predecessor_revision_id, archive_locator
+                FROM media_source_revisions WHERE revision_id = ?
+            """, (revision_id,)).fetchone()
+            if row is None or tuple(row) != expected:
+                raise ValueError("revision_key already names different immutable metadata")
+            result = SourceRevisionWrite(revision_id, "created" if cursor.rowcount == 1 else "unchanged")
+            self.conn.execute("RELEASE SAVEPOINT media_revision_write")
+            if owns_transaction:
+                self.conn.execute("COMMIT")
+            return result
+        except BaseException:
+            # Some SQLite failures abort the transaction themselves. Preserve
+            # the original error if its savepoint was already discarded.
+            with suppress(sqlite3.Error):
+                self.conn.execute("ROLLBACK TO SAVEPOINT media_revision_write")
+                self.conn.execute("RELEASE SAVEPOINT media_revision_write")
+            if owns_transaction:
+                with suppress(sqlite3.Error):
+                    self.conn.execute("ROLLBACK")
+            raise
+
+    def get_source_revision(self, revision_id: str) -> Optional[Dict[str, Any]]:
+        """Read one immutable record; missing optional schema does not mutate it."""
+        revision_id = _revision_text(revision_id, "revision_id", 256)
+        if not self._has_source_revision_schema():
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM media_source_revisions WHERE revision_id = ?", (revision_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_source_revisions(
+        self, asset_id: str, *, limit: int = 100, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded, deterministic page without selecting a current revision."""
+        asset_id = _revision_text(asset_id, "asset_id", 512)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer in 1..1000")
+        if type(offset) is not int or not 0 <= offset <= 2**63 - 1:
+            raise ValueError("offset must be a nonnegative SQLite integer")
+        if not self._has_source_revision_schema():
+            return []
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM media_source_revisions WHERE asset_id = ? "
+            "ORDER BY registered_at, revision_id LIMIT ? OFFSET ?", (asset_id, limit, offset),
+        ).fetchall()]
+
+    def _has_source_revision_schema(self) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_source_revisions'"
+        ).fetchone() is not None
 
     # ------------------------------------------------------------------
     # Assets
