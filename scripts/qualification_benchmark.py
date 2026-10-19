@@ -81,10 +81,13 @@ def backend_guard():
         assert not any(attempts.values()), f"backend tripwire triggered: {attempts}"
 
 
-def benchmark(samples=100, corpus_size=128):
+def benchmark(samples=100, corpus_size=128, source=None):
     if not 20 <= samples <= 1000 or not 32 <= corpus_size <= 1000:
         raise ValueError("samples must be 20..1000 and corpus size 32..1000")
-    repository = Path(__file__).resolve().parents[1]
+    runner = Path(__file__).resolve()
+    repository = Path(source).expanduser().resolve() if source is not None else runner.parents[1]
+    if not (repository / "mnemosyne/core/beam.py").is_file():
+        raise ValueError("source must be a Mnemosyne Git checkout")
     with ExitStack() as guards, tempfile.TemporaryDirectory(prefix="mnemosyne-q1-") as temporary:
         root = Path(temporary)
         # Select only disposable storage BEFORE importing the engine.
@@ -200,6 +203,7 @@ def benchmark(samples=100, corpus_size=128):
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss if resource else None
         report = {
             "schema": 1, "source_commit": head, "source_dirty": dirty,
+            "runner_sha256": hashlib.sha256(runner.read_bytes()).hexdigest(),
             "imported_sources": imported,
             "package_version": __version__, "python": platform.python_version(),
             "platform": platform.platform(), "machine": platform.machine(),
@@ -225,5 +229,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--corpus-size", type=int, default=128)
+    parser.add_argument("--source", type=Path, help="explicit candidate Git checkout; defaults to this repository")
     args = parser.parse_args()
-    print(json.dumps(benchmark(args.samples, args.corpus_size), indent=2))
+    print(json.dumps(benchmark(args.samples, args.corpus_size, args.source), indent=2))

@@ -21,13 +21,14 @@ def test_offline_benchmark_reports_samples_and_invariants(tmp_path):
         "PYTHONPATH": str(SCRIPT.parents[1]),
     }
     completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--samples", "20", "--corpus-size", "128"],
+        [sys.executable, str(SCRIPT), "--source", str(SCRIPT.parents[1]), "--samples", "20", "--corpus-size", "128"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     report = json.loads(completed.stdout)
     assert report["embedding_calls"] == report["model_calls"] == 0
     assert report["network_attempts"] == 0
+    assert report["runner_sha256"] == hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
     assert report["backend_tripwires"]
     assert report["imported_sources"]["mnemosyne.core.beam"]["path"] == "mnemosyne/core/beam.py"
     assert report["working_rows"] == 128 + report["writes_including_warmup"]
@@ -53,6 +54,15 @@ def test_offline_benchmark_rejects_unbounded_or_empty_workloads(args):
     )
     assert completed.returncode != 0
     assert "samples must be 20..1000 and corpus size 32..1000" in completed.stderr
+
+
+def test_benchmark_refuses_an_invalid_source(tmp_path):
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--source", str(tmp_path)],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert completed.returncode != 0
+    assert "source must be a Mnemosyne Git checkout" in completed.stderr
 
 
 @pytest.mark.parametrize("regression", ["empty-measured-match", "false-miss", "wrong-hash", "wrong-write"])
