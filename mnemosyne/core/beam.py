@@ -1334,6 +1334,48 @@ def _existing_vec_dim(conn: sqlite3.Connection) -> Optional[int]:
     return dimensions.pop() if len(dimensions) == 1 else None
 
 
+def _orphaned_vec_shadow_tiers(conn: sqlite3.Connection) -> Tuple[str, ...]:
+    """Return vector tiers whose virtual table is gone but whose shadows remain.
+
+    sqlite-vec creates a ``vec0`` virtual table plus shadow tables named after
+    it (``vec_episodes_info``, ``vec_episodes_chunks``, ...). A ``.recover``
+    pass or a partial restore can leave the shadows without the virtual table,
+    and ``CREATE VIRTUAL TABLE ... USING vec0`` then fails with "Could not
+    create '_info' shadow table: table ... already exists". Detecting that state
+    before any DDL lets initialization skip the tier instead of aborting or
+    deleting index data it cannot prove is reconstructible (issue #1120).
+    """
+    names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    orphans = []
+    for table in _VEC_TABLE_NAMES:
+        if table in names:
+            continue
+        prefix = table + "_"
+        if any(name.startswith(prefix) for name in names):
+            orphans.append(table)
+    return tuple(orphans)
+
+
+def _orphaned_vec_shadow_message(tiers: Tuple[str, ...]) -> str:
+    """Build one actionable message for a degraded vector tier."""
+    affected = ", ".join(tiers)
+    return (
+        f"Orphaned sqlite-vec shadow tables found for {affected}: the vector "
+        f"table is missing but its shadow tables remain, so it cannot be "
+        f"recreated in place. Your memories are intact; dense recall for the "
+        f"affected tier is unavailable and falls back to keyword search. No "
+        f"rows or shadow tables were changed. Restore the missing vector table "
+        f"from a backup taken before the store was recovered, or rebuild it "
+        f"with an explicit repair step; automatic cleanup is not performed "
+        f"(issue #1120)."
+    )
+
+
 def _dim_mismatch_message(
     stored_dims: Tuple[Tuple[str, int], ...], configured_dim: int
 ) -> str:
@@ -1375,12 +1417,15 @@ class BeamInitResult:
     fixed-order immutable ``(table, dimension)`` tuple; ``existing_dim`` is set
     only when those stored tables have one uniform dimension. A mismatch remains
     recoverable and does not prevent the non-vector schema from being initialized.
+    ``orphaned_vec_tiers`` names tiers left without a virtual table because only
+    their shadow tables survived; those tiers stay untouched and degraded.
     """
 
     vec_dim_mismatch: bool
     existing_dim: Optional[int]
     configured_dim: int
     stored_dims: Tuple[Tuple[str, int], ...] = ()
+    orphaned_vec_tiers: Tuple[str, ...] = ()
 
 
 _schema_locks = {}
@@ -1596,6 +1641,9 @@ def _init_beam_locked(db_path: Path) -> BeamInitResult:
     vec_dim_mismatch = any(dim != EMBEDDING_DIM for _, dim in stored_dims)
     if vec_dim_mismatch:
         logger.error(_dim_mismatch_message(stored_dims, EMBEDDING_DIM))
+    orphaned_vec_tiers = _orphaned_vec_shadow_tiers(conn)
+    if orphaned_vec_tiers:
+        logger.error(_orphaned_vec_shadow_message(orphaned_vec_tiers))
     if _SQLITE_VEC_AVAILABLE:
         if not vec_dim_mismatch:
             try:
@@ -1603,17 +1651,19 @@ def _init_beam_locked(db_path: Path) -> BeamInitResult:
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
                     "AND name='vec_episodes'"
                 ).fetchone() is not None
-                cursor.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodes USING vec0(
-                        embedding {effective_vec_type}[{EMBEDDING_DIM}]
-                    )
-                """)
-                cursor.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS vec_working USING vec0(
-                        embedding {effective_vec_type}[{EMBEDDING_DIM}]
-                    )
-                """)
-                if not _ep_exists_before:
+                if "vec_episodes" not in orphaned_vec_tiers:
+                    cursor.execute(f"""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_episodes USING vec0(
+                            embedding {effective_vec_type}[{EMBEDDING_DIM}]
+                        )
+                    """)
+                if "vec_working" not in orphaned_vec_tiers:
+                    cursor.execute(f"""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS vec_working USING vec0(
+                            embedding {effective_vec_type}[{EMBEDDING_DIM}]
+                        )
+                    """)
+                if not _ep_exists_before and "vec_episodes" not in orphaned_vec_tiers:
                     # Brand-new table: every row written into it will be
                     # normalized, so it is safe for raw-L2 KNN from row 1.
                     # Pre-existing (upgraded) stores stay unmarked and
@@ -2013,10 +2063,14 @@ def _init_beam_locked(db_path: Path) -> BeamInitResult:
         END
     """)
 
-    # Vector table for facts (sqlite-vec). Skipped on a dimension mismatch for the
-    # same reason as vec_episodes / vec_working above (see the guard in the
-    # sqlite-vec VIRTUAL TABLES block).
-    if _SQLITE_VEC_AVAILABLE and not vec_dim_mismatch:
+    # Vector table for facts (sqlite-vec). Skipped on a dimension mismatch or a
+    # surviving orphaned shadow for the same reason as vec_episodes /
+    # vec_working above (see the guard in the sqlite-vec VIRTUAL TABLES block).
+    if (
+        _SQLITE_VEC_AVAILABLE
+        and not vec_dim_mismatch
+        and "vec_facts" not in orphaned_vec_tiers
+    ):
         try:
             cursor.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS vec_facts USING vec0(
@@ -2046,6 +2100,7 @@ def _init_beam_locked(db_path: Path) -> BeamInitResult:
         existing_dim=existing_dim,
         configured_dim=EMBEDDING_DIM,
         stored_dims=stored_dims,
+        orphaned_vec_tiers=orphaned_vec_tiers,
     )
 
 
@@ -2507,6 +2562,13 @@ def _deferred_commits(conn: sqlite3.Connection, *, immediate: bool = False):
 
 def _generate_id(content: str) -> str:
     return hashlib.sha256(f"{content}{datetime.now().isoformat()}".encode()).hexdigest()[:16]
+
+
+# Generated memory ids are 16 lowercase hex characters. Derived rows can also
+# carry a legacy message index in ``source_msg_id``; only the generated shape
+# is safe to treat as a memory reference when filtering orphans.
+_MEMORY_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
 
 def _sanitize_utf8(text: str) -> str:
     """Ensure text is valid UTF-8, stripping or replacing invalid bytes.
@@ -2993,6 +3055,8 @@ def _extract_and_store_entities(beam: "BeamMemory", memory_id: str, content: str
     multiple mentions per memory coexist.
     """
     try:
+        if not beam._memory_parent_exists(beam.conn, memory_id):
+            return
         from mnemosyne.core.entities import extract_entities_regex
 
         entities = extract_entities_regex(content)
@@ -3034,6 +3098,8 @@ def _extract_and_store_facts(
     coexist.
     """
     try:
+        if not beam._memory_parent_exists(beam.conn, memory_id):
+            return
         from mnemosyne.core.annotations import filter_facts
         from mnemosyne.core.extraction import (
             extract_facts_safe,
@@ -6697,6 +6763,11 @@ class BeamMemory:
         """Phase 3-4: Extract gists + facts, store in graph, consolidate veracity.
         Non-blocking -- failures in graph/veracity don't affect memory storage."""
 
+        if not self._memory_parent_exists(self.conn, memory_id):
+            # A paused remember() can resume after forget(); do not recreate
+            # annotations, gists or facts for a row that no longer exists.
+            return
+
         gist = None
         facts = []
 
@@ -6936,16 +7007,12 @@ class BeamMemory:
         # (keyed by rowid) and the memory_embeddings fallback (keyed by id)
         # are cleared here for the same rows: the trim set is read once
         # and every delete uses it.
-        owner_tables = ["episodic_memory"]
-        if self.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
-        ).fetchone() is not None:
-            owner_tables.append("memories")
         # memory_embeddings carries only memory_id: keep the row while an
-        # episodic or legacy parent owns the same id (#1002).
-        other_owner = "".join(
-            f" AND NOT EXISTS (SELECT 1 FROM {table} WHERE {table}.id = memory_embeddings.memory_id)"
-            for table in owner_tables
+        # episodic parent owns the same id (#1002). The legacy ``memories``
+        # mirror is not a parent tier (#1126).
+        other_owner = (
+            " AND NOT EXISTS (SELECT 1 FROM episodic_memory "
+            "WHERE episodic_memory.id = memory_embeddings.memory_id)"
         )
         owns_transaction = not self.conn.in_transaction
         savepoint = None
@@ -6989,6 +7056,16 @@ class BeamMemory:
                     "DELETE FROM memory_embeddings WHERE memory_id = ?" + other_owner,
                     [(row[1],) for row in trimmed],
                 )
+                # A trimmed id can still be owned by an episodic parent, in
+                # which case its derived rows stay with that tier. Otherwise
+                # the derived voices and the legacy mirror go with the row,
+                # matching the explicit-forget contract (#1131, #1035, #1126).
+                for (mid,) in [(row[1],) for row in trimmed]:
+                    if self.conn.execute(
+                        "SELECT 1 FROM episodic_memory WHERE id = ? LIMIT 1", (mid,)
+                    ).fetchone() is None:
+                        BeamMemory._delete_derived_memory_rows(self.conn, mid)
+                        BeamMemory._delete_orphaned_legacy_mirror(self.conn, mid)
             # Inside the try: a failed commit (e.g. a deferred foreign key)
             # rolls all three deletes back instead of leaving them staged.
             if savepoint is None:
@@ -7723,6 +7800,87 @@ class BeamMemory:
         return None
 
     @staticmethod
+    def _memory_has_surviving_parent(cursor, memory_id: str) -> bool:
+        """True when a working or episodic row still owns the id.
+
+        Partial schemas (relay databases, focused tests) may omit a tier
+        table, so probe only the tables that exist rather than assuming both.
+        """
+        existing = {
+            row[0]
+            for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        checks = [
+            f"SELECT 1 FROM {table} WHERE id = ?"
+            for table in ("working_memory", "episodic_memory")
+            if table in existing
+        ]
+        if not checks:
+            return False
+        return cursor.execute(
+            " UNION ALL ".join(checks) + " LIMIT 1",
+            tuple(memory_id for _ in checks),
+        ).fetchone() is not None
+
+    @staticmethod
+    def _memory_parent_exists(conn, memory_id: str) -> bool:
+        """True when a BEAM tier still owns the id.
+
+        Enrichment can resume after a forget (#1100). Child writes must check
+        this immediately before inserting, not only at the start of the
+        operation, so a completed delete cannot be followed by a new child row.
+        """
+        return BeamMemory._memory_has_surviving_parent(conn, memory_id)
+
+    @staticmethod
+    def _delete_orphaned_legacy_mirror(cursor, memory_id: str) -> None:
+        """Drop the legacy ``memories`` mirror once no BEAM tier owns the id.
+
+        The mirror exists for old readers and is not a parent tier. Treating
+        it as one made a tier-scoped forget retain every child forever, because
+        no BEAM path removes the mirror (#1126). Delete it only after both tier
+        tables are free of the id, so a surviving tier keeps its representation.
+        """
+        if cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+        ).fetchone() is None:
+            return
+        if not BeamMemory._memory_has_surviving_parent(cursor, memory_id):
+            cursor.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+    @staticmethod
+    def _delete_derived_memory_rows(cursor, memory_id: str) -> None:
+        """Delete rows derived from a memory id that has no surviving parent.
+
+        ``memoria_*`` rows carry ``source_memory_id`` and ``facts`` carries
+        ``source_msg_id`` (the extraction paths store the memory id there).
+        Neither was reached by the old cascade, so forgotten content stayed
+        retrievable through the memoria and fact voices (#1131, #1035).
+        """
+        existing = {
+            row[0]
+            for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        for table in (
+            "memoria_facts",
+            "memoria_timelines",
+            "memoria_instructions",
+            "memoria_preferences",
+            "memoria_kg",
+            "memoria_persona",
+        ):
+            if table in existing:
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE source_memory_id = ?", (memory_id,)
+                )
+        if "facts" in existing:
+            cursor.execute("DELETE FROM facts WHERE source_msg_id = ?", (memory_id,))
+
+    @staticmethod
     def _delete_unambiguous_memory_children(cursor, memory_id: str) -> None:
         """Delete child rows after the caller proves no other tier owns the ID.
 
@@ -7739,6 +7897,7 @@ class BeamMemory:
         ).fetchone()
         if gists_table is not None:
             cursor.execute("DELETE FROM gists WHERE memory_id = ?", (memory_id,))
+        BeamMemory._delete_derived_memory_rows(cursor, memory_id)
 
     def forget_working(self, memory_id: str) -> bool:
         """Delete an authorized working row without crossing tier ownership.
@@ -7765,16 +7924,6 @@ class BeamMemory:
                 "SELECT 1 FROM episodic_memory WHERE id = ? LIMIT 1",
                 (memory_id,),
             ).fetchone()
-            if competing_parent is None:
-                legacy_table = cursor.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'memories'"
-                ).fetchone()
-                if legacy_table is not None:
-                    competing_parent = cursor.execute(
-                        "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
-                        (memory_id,),
-                    ).fetchone()
             if authorized_row is not None and _wm_vec_available(self.conn):
                 cursor.execute("DELETE FROM vec_working WHERE rowid = ?", (int(authorized_row["rowid"]),))
             cursor.execute(
@@ -7784,6 +7933,8 @@ class BeamMemory:
             wm_rows = cursor.rowcount
             if wm_rows > 0 and competing_parent is None:
                 self._delete_unambiguous_memory_children(cursor, memory_id)
+            if wm_rows > 0:
+                self._delete_orphaned_legacy_mirror(cursor, memory_id)
         forgotten = wm_rows > 0
         if forgotten:
             if owns_transaction:
@@ -7816,16 +7967,6 @@ class BeamMemory:
                 "SELECT 1 FROM working_memory WHERE id = ? LIMIT 1",
                 (memory_id,),
             ).fetchone()
-            if competing_parent is None:
-                legacy_table = cursor.execute(
-                    "SELECT 1 FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'memories'"
-                ).fetchone()
-                if legacy_table is not None:
-                    competing_parent = cursor.execute(
-                        "SELECT 1 FROM memories WHERE id = ? LIMIT 1",
-                        (memory_id,),
-                    ).fetchone()
             if authorized_row is not None and _vec_available(self.conn):
                 cursor.execute(
                     "DELETE FROM vec_episodes WHERE rowid = ?",
@@ -7839,6 +7980,8 @@ class BeamMemory:
             episodic_rows = cursor.rowcount
             if episodic_rows > 0 and competing_parent is None:
                 self._delete_unambiguous_memory_children(cursor, memory_id)
+            if episodic_rows > 0:
+                self._delete_orphaned_legacy_mirror(cursor, memory_id)
         forgotten = episodic_rows > 0
         if forgotten:
             if owns_transaction:
@@ -8773,6 +8916,19 @@ class BeamMemory:
     # ------------------------------------------------------------------
     # MEMORIA: Structured Fact Retrieval (Phase 2)
     # ------------------------------------------------------------------
+    def _derived_source_is_alive(self, source_id: Optional[str]) -> bool:
+        """True when a derived row's source memory still exists.
+
+        Rows extracted before the 4.0 deletion cascade, or preserved by an
+        import, can point at a memory that no longer exists. Derived retrieval
+        must not surface forgotten content. Only the generated id shape is
+        checked: a legacy ``source_msg_id`` can be a message index.
+        """
+        source = str(source_id or "").strip()
+        if not _MEMORY_ID_RE.match(source):
+            return True
+        return self._memory_has_surviving_parent(self.conn, source)
+
     def memoria_retrieve(self, query: str, ability: str = None, top_k: int = 10) -> dict:
         """Route a query to the appropriate MEMORIA specialist table.
         Returns dict with keys: context (str), facts (list), source (str).
@@ -8784,21 +8940,29 @@ class BeamMemory:
             ability = self._classify_ability(query)
 
         if ability in ('IE', 'KU'):
-            return self._memoria_fact_retrieve(query, top_k)
+            result = self._memoria_fact_retrieve(query, top_k)
         elif ability == 'TR':
-            return self._memoria_timeline_retrieve(query, top_k)
+            result = self._memoria_timeline_retrieve(query, top_k)
         elif ability == 'CR':
-            return self._memoria_negation_retrieve(query, top_k)
+            result = self._memoria_negation_retrieve(query, top_k)
         elif ability == 'MR':
-            return self._memoria_entity_retrieve(query, top_k)
+            result = self._memoria_entity_retrieve(query, top_k)
         elif ability == 'EO':
-            return self._memoria_chrono_retrieve(query, top_k)
+            result = self._memoria_chrono_retrieve(query, top_k)
         elif ability == 'IF':
-            return self._memoria_instruction_retrieve(query, top_k)
+            result = self._memoria_instruction_retrieve(query, top_k)
         elif ability == 'PF':
-            return self._memoria_preference_retrieve(query, top_k)
+            result = self._memoria_preference_retrieve(query, top_k)
         else:
             return result
+
+        facts = result.get("facts") or []
+        if facts:
+            result["facts"] = [
+                fact for fact in facts
+                if self._derived_source_is_alive(fact.get("source_memory_id"))
+            ]
+        return result
 
     @staticmethod
     def _classify_ability(query: str) -> str:
@@ -11839,7 +12003,7 @@ class BeamMemory:
             try:
                 cursor.execute(f"""
                     SELECT rowid, fact_id, subject, predicate, object,
-                           timestamp, confidence
+                           timestamp, confidence, source_msg_id
                     FROM facts
                     WHERE rowid IN ({placeholders})
                 """, (*ranked_ids,))
@@ -11869,6 +12033,7 @@ class BeamMemory:
                     "fact_id": row["fact_id"],
                     "subject": subject,
                     "predicate": predicate,
+                    "source_msg_id": row.get("source_msg_id"),
                 })
 
         # --- Source 2: consolidated_facts (sleep-consolidated LLM triples) ---
@@ -11904,6 +12069,10 @@ class BeamMemory:
 
         # Sort by score descending, respect top_k, and apply the same public
         # content boundary as recall() / recall_enhanced().
+        results = [
+            result for result in results
+            if self._derived_source_is_alive(result.get("source_msg_id"))
+        ]
         results.sort(key=lambda x: x["score"], reverse=True)
         return _cap_recall_results(results[:top_k])
 
