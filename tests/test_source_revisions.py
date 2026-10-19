@@ -142,6 +142,7 @@ def test_self_predecessor_and_predecessor_changes_are_refused(store):
     {"content_hash": " " + "a" * 64}, {"byte_size": -1}, {"byte_size": True},
     {"byte_size": 2**63}, {"representation": ""}, {"representation": "x" * 129},
     {"archive_locator": "x" * 4097}, {"archive_locator": "bad\nhandle"},
+    {"archive_locator": "data:text/plain,inline-document"}, {"archive_locator": "javascript:payload"},
     {"predecessor_revision_id": ""},
 ])
 def test_invalid_metadata_does_not_create_schema(store, arguments):

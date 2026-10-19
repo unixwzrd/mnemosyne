@@ -712,6 +712,8 @@ class MediaStore:
             predecessor_revision_id = _revision_text(predecessor_revision_id, "predecessor_revision_id", 256)
         if archive_locator is not None:
             archive_locator = _revision_text(archive_locator, "archive_locator", 4096)
+            if urlsplit(archive_locator).scheme.lower() in {"data", "javascript"}:
+                raise ValueError("archive_locator must reference external evidence, not an inline payload")
         identity = json.dumps(["v1", asset_id, revision_key], separators=(",", ":"))
         revision_id = "revision:sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
         if predecessor_revision_id == revision_id:
