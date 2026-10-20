@@ -12,6 +12,7 @@ from mnemosyne.core.policy import (
     _labels, _number, _text,
 )
 from mnemosyne.core.policy_store import PolicyStore, RecordKind, _identity
+from mnemosyne.core.policy_projects import PolicyProjects
 from mnemosyne.runtime_context import get_access_context
 
 
@@ -35,6 +36,17 @@ class BankReadGrant:
             _text(getattr(self, name), name)
         for name in ("owners", "tenants"):
             object.__setattr__(self, name, _labels(getattr(self, name), name))
+
+
+@dataclass(frozen=True, repr=False)
+class ProjectReadGrant(BankReadGrant):
+    """Verified exact project selection, not a bank-wide authorization."""
+
+    projects: FrozenSet[str] = frozenset()
+
+    def __post_init__(self):
+        super().__post_init__()
+        object.__setattr__(self, "projects", _labels(self.projects, "projects"))
 
 
 @dataclass(frozen=True, repr=False)
@@ -73,16 +85,20 @@ class PolicyReader:
         self._store = store
         self._bank = _text(bank, "bank")
         self._verify = verify_context
+        self._projects = PolicyProjects(store)
 
-    def _decision(self, destination: str) -> tuple[AccessContext, BankReadGrant]:
+    def _decision(self, destination: str, projects=None) -> tuple[AccessContext, BankReadGrant, Optional[FrozenSet[str]]]:
         destination = _text(destination, "destination")
         context = get_access_context(required=True)
-        if context.projects or context.assurance != "authenticated":
+        if (projects is None and context.projects) or context.assurance != "authenticated":
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
-        if self._bank not in context.banks or destination not in context.destinations or "read:bank" not in context.operations:
+        selection = None if projects is None else context.narrow(projects=projects).projects
+        operation = "read:bank" if selection is None else "read:projects"
+        if self._bank not in context.banks or destination not in context.destinations or operation not in context.operations:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         try:
-            grant = self._verify(context, bank=self._bank, destination=destination)
+            intent = {} if selection is None else {"projects": selection}
+            grant = self._verify(context, bank=self._bank, destination=destination, **intent)
         except PolicyRefusal:
             raise
         except Exception:
@@ -96,13 +112,18 @@ class PolicyReader:
             or grant.bank != self._bank or grant.destination != destination
         ):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
-        if sum(map(len, (grant.owners, grant.tenants, context.audiences, context.compartments))) > 900:
+        if selection is None:
+            if isinstance(grant, ProjectReadGrant):
+                raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        elif not isinstance(grant, ProjectReadGrant) or grant.projects != selection:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        if sum(map(len, (grant.owners, grant.tenants, context.audiences, context.compartments, selection or ()))) > 900:
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         if sqlite3.sqlite_version_info < (3, 35, 0):
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
-        return context, grant
+        return context, grant, selection
 
-    def _selection(self, kind, context, grant, record_id=None):
+    def _selection(self, kind, context, grant, record_id=None, projects=None):
         domain = self._store._domain(required=True)
         if domain.domain_id != grant.domain_id:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
@@ -123,6 +144,14 @@ class PolicyReader:
         audience = selected("t.value", context.audiences)
         compartment = selected("t.value", context.compartments)
         params.append(context.purpose)
+        project_filter = ""
+        if projects is not None:
+            self._projects._domain(required=True)
+            self._projects._require_projects(projects)
+            membership = selected("m.project_id", projects)
+            project_filter = f"""AND EXISTS (SELECT 1 FROM main.policy_project_memberships AS m
+                WHERE m.binding_id=b.binding_id AND m.confirmed_by IS NOT NULL AND m.confirmed_at IS NOT NULL
+                  AND ({membership}))"""
         target = ""
         if record_id is not None:
             target = "AND b.record_id=?"
@@ -142,14 +171,15 @@ class PolicyReader:
                   WHERE t.binding_id=b.binding_id AND t.dimension='purposes' AND t.value=?)
               AND NOT EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
                   WHERE t.binding_id=b.binding_id AND t.dimension NOT IN ('audiences','compartments','purposes'))
+              {project_filter}
               {target}
         )"""
         return sql, params
 
-    def _read(self, kind, *, destination, record_id=None, limit=100, offset=0):
-        context, grant = self._decision(destination)
+    def _read(self, kind, *, destination, record_id=None, limit=100, offset=0, projects=None):
+        context, grant, selection = self._decision(destination, projects)
         with self._store._transaction():
-            sql, params = self._selection(kind, context, grant, record_id)
+            sql, params = self._selection(kind, context, grant, record_id, selection)
             content = ",n.body" if kind is RecordKind.CANONICAL else ",n.content"
             if record_id is None:
                 content = ""
@@ -165,13 +195,13 @@ class PolicyReader:
             result.append(AuthorizedCandidate(*values) if record_id is None else AuthorizedMemory(*values, row[5]))
         return result
 
-    def get(self, kind: RecordKind, record_id, *, destination: str) -> Optional[AuthorizedMemory]:
+    def get(self, kind: RecordKind, record_id, *, destination: str, projects=None) -> Optional[AuthorizedMemory]:
         """Return one authorized record, or None for both absent and denied IDs."""
         identity = _identity(kind, record_id)
-        records = self._read(kind, destination=destination, record_id=identity, limit=1)
+        records = self._read(kind, destination=destination, record_id=identity, limit=1, projects=projects)
         return records[0] if records else None
 
-    def candidate_ids(self, kind: RecordKind, *, destination: str, limit: int = 100, offset: int = 0):
+    def candidate_ids(self, kind: RecordKind, *, destination: str, limit: int = 100, offset: int = 0, projects=None):
         """List authorized native IDs/provenance without reading native content."""
         if not isinstance(kind, RecordKind):
             raise ValueError("record_kind must be a supported RecordKind")
@@ -179,4 +209,4 @@ class PolicyReader:
         _number(offset, "offset", minimum=0)
         if limit > 1000:
             raise ValueError("limit must be at most 1000")
-        return self._read(kind, destination=destination, limit=limit, offset=offset)
+        return self._read(kind, destination=destination, limit=limit, offset=offset, projects=projects)

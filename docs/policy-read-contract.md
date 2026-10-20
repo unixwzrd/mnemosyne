@@ -2,6 +2,8 @@
 
 Status: provisional downstream implementation, dependent on P1a/P1b. This is not protected-mode activation, an upstream-approved API, or an enforcement retrofit for existing callers. Prepared stores remain readable by legacy APIs. No live store or adapter is migrated.
 
+This document preserves the P2a bank-wide contract. The separately specified [P2b project-selection extension](policy-project-contract.md) adds explicit `projects=...` intent without changing these omitted-argument semantics. References below to unsupported projects describe the bank-wide path, not the optional project mode.
+
 ## Boundary And Trust
 
 `PolicyReader(PolicyStore(connection), bank=..., verify_context=...)` is an explicit, read-only API over an existing prepared catalog. It requires SQLite 3.35 or newer. It never opens a default database, prepares schema, modifies content, fetches sources, calls embeddings or enables protection. Only `PolicySurface.DIRECT` is declared. BEAM, vector, lexical, graph, writes, derivatives, maintenance, export and adapters remain unqualified and are not exposed through this reader.
