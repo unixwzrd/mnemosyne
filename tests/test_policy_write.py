@@ -473,3 +473,36 @@ def test_busy_writer_refuses_without_partial_creation_and_retry_is_fresh(creatio
         other.close()
     assert create(creation).transaction_state == "committed"
     assert len(creation[3].calls) == 2
+
+
+@pytest.mark.parametrize("kind", [RecordKind.WORKING, RecordKind.EPISODIC])
+@pytest.mark.parametrize("layout", ["unindexed", "contentless", "wrong-content", "wrong-rowid", "tokenizer"])
+def test_changed_fts_configuration_refuses_without_native_or_policy_write(creation, kind, layout):
+    beam, store, ctx, *_ = creation
+    fts = "fts_working" if kind is RecordKind.WORKING else "fts_episodes"
+    columns = "id UNINDEXED,content" if kind is RecordKind.WORKING else "content"
+    if layout == "unindexed":
+        columns += " UNINDEXED"
+    if kind is RecordKind.EPISODIC:
+        target = "" if layout == "contentless" else "missing_table" if layout == "wrong-content" else "episodic_memory"
+        rowid = "other_id" if layout == "wrong-rowid" else "rowid"
+        columns += f",content='{target}',content_rowid='{rowid}'"
+    elif layout in ("contentless", "wrong-content"):
+        columns += ",content=''" if layout == "contentless" else ",content='missing_table'"
+    elif layout == "wrong-rowid":
+        columns += ",content_rowid='other_id'"
+    if layout == "tokenizer":
+        columns += ",tokenize='porter'"
+    beam.conn.execute(f"DROP TABLE main.{fts}")
+    beam.conn.execute(f"CREATE VIRTUAL TABLE main.{fts} USING fts5({columns})")
+    beam.conn.commit()
+    changes = beam.conn.total_changes
+    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
+        create(creation, kind=kind)
+    assert beam.conn.total_changes == changes and not beam.conn.in_transaction
+    assert beam.conn.execute(f"SELECT count(*) FROM main.{kind.value}").fetchone()[0] == 0
+    assert store.get_binding(kind, "new") is None
+    reader = PolicyReader(store, bank="bank:a", verify_context=lambda actual, **kw: BankReadGrant(
+        actual.fingerprint(), "domain:a", kw["bank"], kw["destination"], "read:a", {"person:a"}, {"tenant:a"}))
+    with bind_access_context(ctx), pytest.raises(PolicyRefusal, match="unsupported_surface"):
+        beam.recall_authorized_lexical("the and", reader=reader, destination="channel:a")

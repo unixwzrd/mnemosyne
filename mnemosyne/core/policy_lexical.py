@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Tuple
@@ -13,6 +14,21 @@ from mnemosyne.core.policy_store import PolicyStoreError, RecordKind, StoreError
 
 CAPABILITIES = AdapterCapabilities("beam-authorized-lexical", {PolicySurface.LEXICAL})
 MAX_SCORING_CHARACTERS = 16384
+
+
+def _require_fts_surface(conn, kind):
+    """Accept only the indexed native layouts used by both reads and creates."""
+    working = kind is RecordKind.WORKING
+    fts = "fts_working" if working else "fts_episodes"
+    normal = (("id", 0), ("content", 0)) if working else (("content", 0),)
+    expected = (*normal, (fts, 1), ("rank", 1))
+    actual = tuple((r[1], r[6]) for r in conn.execute(f"PRAGMA main.table_xinfo('{fts}')"))
+    row = conn.execute("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", (fts,)).fetchone()
+    columns = (r"id\s+UNINDEXED\s*,\s*content" if working else
+               r"content\s*,\s*content\s*=\s*'episodic_memory'\s*,\s*content_rowid\s*=\s*'rowid'")
+    pattern = rf"CREATE\s+VIRTUAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{fts}\s+USING\s+fts5\s*\(\s*{columns}\s*\)"
+    if actual != expected or row is None or row[0] is None or re.fullmatch(pattern, row[0].strip(), re.I) is None:
+        raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
 
 
 @dataclass(frozen=True, repr=False)
@@ -79,11 +95,7 @@ def recall_authorized_lexical(beam, query, *, reader, destination, projects=None
             # Verify required native mappings even for a valid empty query.
             conn.execute(sql + " SELECT native_id FROM native_eligible LIMIT 0", params)
             conn.execute(f"SELECT content FROM main.{kind.value} LIMIT 0")
-            normal_columns = (("id", 0), ("content", 0)) if kind is RecordKind.WORKING else (("content", 0),)
-            expected_fts = (*normal_columns, (fts, 1), ("rank", 1))
-            actual_fts = tuple((row[1], row[6]) for row in conn.execute(f"PRAGMA main.table_xinfo('{fts}')"))
-            if actual_fts != expected_fts:
-                raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+            _require_fts_surface(conn, kind)
             if not terms:
                 if _has_cjk(query) or _has_cyrillic(query) or _symbolic_code_tokens(query):
                     raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)

@@ -14,6 +14,7 @@ from mnemosyne.core.policy import (
     RefusalReason, _number, _text,
 )
 from mnemosyne.core.policy_store import PolicyStore, PolicyStoreError, RecordKind, StoreErrorCode, _identity
+from mnemosyne.core.policy_lexical import _require_fts_surface
 from mnemosyne.runtime_context import get_access_context
 
 
@@ -90,9 +91,7 @@ def _native_surface(conn, kind):
     if not required <= columns.keys() or any(columns[n][2].upper() != "TEXT" or columns[n][6] != 0 for n in required):
         raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
     fts, trigger = ("fts_working", "wm_ai") if kind is RecordKind.WORKING else ("fts_episodes", "em_ai")
-    expected = (("id", 0), ("content", 0), (fts, 1), ("rank", 1)) if kind is RecordKind.WORKING else (("content", 0), (fts, 1), ("rank", 1))
-    if tuple((r[1], r[6]) for r in conn.execute(f"PRAGMA main.table_xinfo('{fts}')")) != expected:
-        raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+    _require_fts_surface(conn, kind)
     row = conn.execute("SELECT tbl_name,sql FROM main.sqlite_master WHERE type='trigger' AND name=?", (trigger,)).fetchone()
     keys, values = ("id, content", "new.id, new.content") if kind is RecordKind.WORKING else ("rowid, content", "new.rowid, new.content")
     expected_trigger = f"CREATE TRIGGER {trigger} AFTER INSERT ON {kind.value} BEGIN INSERT INTO {fts}({keys}) VALUES ({values}); END"
