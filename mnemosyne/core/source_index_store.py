@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+import hashlib
 import re
 import sqlite3
 from uuid import uuid4
@@ -44,6 +45,7 @@ _DDL = {
         char_end INTEGER NOT NULL,
         text TEXT NOT NULL,
         utf8_bytes INTEGER NOT NULL,
+        text_sha256 TEXT NOT NULL,
         PRIMARY KEY(fingerprint, ordinal)
     )""",
 }
@@ -99,6 +101,14 @@ def _integer(value, low, high):
     return type(value) is int and low <= value <= high
 
 
+def _sql_text(column, maximum):
+    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={maximum} THEN {column} END"
+
+
+def _sql_int(column):
+    return f"CASE WHEN typeof({column})='integer' THEN {column} END"
+
+
 class SourceIndexStore:
     """Explicit catalogue on an existing connection. No constructor migration."""
 
@@ -110,13 +120,13 @@ class SourceIndexStore:
     @contextmanager
     def _transaction(self, *, write=False):
         owns = not self.conn.in_transaction
-        if owns and write:
-            self.conn.execute("BEGIN IMMEDIATE")
         savepoint = "source_index_" + uuid4().hex
         started = False
         try:
-            self.conn.execute(f"SAVEPOINT {savepoint}")
+            if owns and write:
+                self.conn.execute("BEGIN IMMEDIATE")
             started = True
+            self.conn.execute(f"SAVEPOINT {savepoint}")
             yield owns
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             if owns and write:
@@ -193,15 +203,15 @@ class SourceIndexStore:
     def _assets(self, source_key):
         self._native_table("media_assets", "asset_id", {"asset_id", "ref_kind", "ref_value", "metadata", "title", "source", "provider", "provider_model"})
         self._native_table("media_moments", "moment_id", {"moment_id", "asset_id"})
-        assets = self.conn.execute(f"SELECT CASE WHEN length(asset_id)<=512 THEN asset_id END FROM main.{_ASSETS} WHERE source_key=? LIMIT 33", (source_key,)).fetchall()
+        assets = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.{_ASSETS} WHERE source_key=? LIMIT 33", (source_key,)).fetchall()
         if not 1 <= len(assets) <= 32:
             raise SourceIndexStoreError("invalid-record")
         for (asset_id,) in assets:
             if type(asset_id) is not str or re.fullmatch(r"ref:[0-9a-f]{64}", asset_id) is None:
                 raise SourceIndexStoreError("invalid-record")
-            row = self.conn.execute("""SELECT ref_kind,
-                CASE WHEN length(ref_value)<=4096 THEN ref_value END,
-                COALESCE(metadata, '{}')='{}', title IS NULL AND source IS NULL AND provider IS NULL AND provider_model IS NULL
+            row = self.conn.execute(f"""SELECT CASE WHEN typeof(ref_kind)='text' AND ref_kind='url' THEN 'url' END,
+                {_sql_text('ref_value', 4096)},
+                COALESCE(metadata, '{{}}')='{{}}', title IS NULL AND source IS NULL AND provider IS NULL AND provider_model IS NULL
                 FROM main.media_assets WHERE asset_id=?""", (asset_id,)).fetchone()
             if row is None or row[0] != "url" or not row[2] or not row[3]:
                 raise SourceIndexStoreError("unaccounted-legacy-state")
@@ -222,7 +232,9 @@ class SourceIndexStore:
         return {row[0] for row in assets}
 
     def _audit(self, source_key):
-        group = self.conn.execute(f"SELECT per_excerpt_bytes, retained_bytes, excerpt_count, byte_ceiling FROM main.{_GROUPS} WHERE source_key=?", (source_key,)).fetchone()
+        group = self.conn.execute(f"""SELECT {_sql_int('per_excerpt_bytes')}, {_sql_int('retained_bytes')},
+            {_sql_int('excerpt_count')}, CASE WHEN typeof(byte_ceiling) IN ('null','integer') THEN byte_ceiling ELSE -1 END
+            FROM main.{_GROUPS} WHERE source_key=?""", (source_key,)).fetchone()
         if group is None:
             return None
         try:
@@ -232,11 +244,9 @@ class SourceIndexStore:
                 raise ValueError
             assets = self._assets(source_key)
             rows = self.conn.execute(f"""SELECT
-                CASE WHEN length(fingerprint)=64 THEN fingerprint END,
-                CASE WHEN length(source_revision_id)<=256 THEN source_revision_id END,
-                CASE WHEN length(extraction_sha256)=64 THEN extraction_sha256 END,
-                CASE WHEN length(output_locator)<=4096 THEN output_locator END,
-                source_utf8_bytes FROM main.{_PLANS} WHERE source_key=? LIMIT 129""", (source_key,)).fetchall()
+                {_sql_text('fingerprint', 64)}, {_sql_text('source_revision_id', 256)},
+                {_sql_text('extraction_sha256', 64)}, {_sql_text('output_locator', 4096)},
+                {_sql_int('source_utf8_bytes')} FROM main.{_PLANS} WHERE source_key=? LIMIT 129""", (source_key,)).fetchall()
             if len(rows) > 128:
                 raise ValueError
             plans, used_bytes, used_count = {}, 0, 0
@@ -250,18 +260,19 @@ class SourceIndexStore:
                     or not _integer(source_size, 0, MAX_EXTRACTION_BYTES)
                 ):
                     raise ValueError
-                native = self.conn.execute("SELECT asset_id FROM main.media_source_revisions WHERE revision_id=?", (revision,)).fetchone()
+                native = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.media_source_revisions WHERE revision_id=?", (revision,)).fetchone()
                 if native is None or native[0] not in assets:
                     raise ValueError
                 excerpts = []
                 retained = previous_end = 0
-                for ordinal, start, end, text, size in self.conn.execute(f"""SELECT ordinal, char_start, char_end,
-                    CASE WHEN typeof(text)='text' AND length(text)<=4096 THEN text END, utf8_bytes
+                for ordinal, start, end, text, size, text_hash in self.conn.execute(f"""SELECT {_sql_int('ordinal')}, {_sql_int('char_start')}, {_sql_int('char_end')},
+                    {_sql_text('text', 4096)}, {_sql_int('utf8_bytes')}, {_sql_text('text_sha256', 64)}
                     FROM main.{_EXCERPTS} WHERE fingerprint=? ORDER BY ordinal LIMIT 129""", (fingerprint,)).fetchall():
                     if (
                         ordinal != len(excerpts) or type(text) is not str or not _integer(start, previous_end, MAX_EXTRACTION_BYTES)
                         or not _integer(end, start + 1, source_size) or end-start != len(text)
                         or not _integer(size, 1, limits.per_excerpt_bytes) or len(text.encode("utf-8")) != size
+                        or hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash
                     ):
                         raise ValueError
                     excerpts.append(SourceExcerpt(SourceSpan(start, end), text, size))
@@ -298,9 +309,9 @@ class SourceIndexStore:
             current = self._audit(source_key)
             if current and current[0].limits != limits:
                 raise SourceIndexStoreError("limits-conflict")
-            existing = self.conn.execute("SELECT asset_id FROM main.media_assets WHERE asset_id=? OR (ref_kind='url' AND ref_value=?)", (asset_id, locator)).fetchall()
+            existing = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.media_assets WHERE asset_id=? OR (ref_kind='url' AND ref_value=?)", (asset_id, locator)).fetchall()
             if existing:
-                mapped = self.conn.execute(f"SELECT source_key FROM main.{_ASSETS} WHERE asset_id=?", (asset_id,)).fetchone()
+                mapped = self.conn.execute(f"SELECT {_sql_text('source_key', 128)} FROM main.{_ASSETS} WHERE asset_id=?", (asset_id,)).fetchone()
                 if len(existing) != 1 or existing[0][0] != asset_id or mapped is None or mapped[0] != source_key or current is None:
                     raise SourceIndexStoreError("existing-asset-refused")
                 return SourceRegistration(asset_id, "unchanged", "committed" if owns else "pending")
@@ -323,8 +334,8 @@ class SourceIndexStore:
             plan = plan_source_index(source_revision_id, extracted_text, extraction_sha256=extraction_sha256,
                 output_locator=output_locator, spans=spans, limits=usage.limits)
             self._native_table("media_source_revisions", "revision_id", {"revision_id", "asset_id"})
-            native = self.conn.execute(f"SELECT a.source_key FROM main.media_source_revisions r JOIN main.{_ASSETS} a ON a.asset_id=r.asset_id WHERE r.revision_id=?", (source_revision_id,)).fetchone()
-            if native is None or native[0] != source_key:
+            native = self.conn.execute(f"SELECT 1 FROM main.media_source_revisions r JOIN main.{_ASSETS} a ON a.asset_id=r.asset_id WHERE r.revision_id=? AND a.source_key=?", (source_revision_id, source_key)).fetchone()
+            if native is None:
                 raise SourceIndexStoreError("revision-mismatch")
             state = "committed" if owns else "pending"
             if plan.fingerprint in plans:
@@ -342,8 +353,9 @@ class SourceIndexStore:
             self.conn.execute(f"INSERT INTO main.{_PLANS} VALUES(?,?,?,?,?,?)", (plan.fingerprint, source_key,
                 plan.source_revision_id, plan.extraction_sha256, plan.output_locator, plan.source_utf8_bytes)).fetchall()
             for ordinal, excerpt in enumerate(plan.excerpts):
-                self.conn.execute(f"INSERT INTO main.{_EXCERPTS} VALUES(?,?,?,?,?,?)", (plan.fingerprint, ordinal,
-                    excerpt.span.start, excerpt.span.end, excerpt.text, excerpt.utf8_bytes)).fetchall()
+                self.conn.execute(f"INSERT INTO main.{_EXCERPTS} VALUES(?,?,?,?,?,?,?)", (plan.fingerprint, ordinal,
+                    excerpt.span.start, excerpt.span.end, excerpt.text, excerpt.utf8_bytes,
+                    hashlib.sha256(excerpt.text.encode('utf-8')).hexdigest())).fetchall()
             self.conn.execute(f"UPDATE main.{_GROUPS} SET byte_ceiling=? WHERE source_key=?", (ceiling, source_key)).fetchall()
             self._audit(source_key)
             result = SourceIndexWrite(plan.fingerprint, "created", state)
@@ -362,7 +374,7 @@ class SourceIndexStore:
         with self._transaction():
             if not self._schema():
                 return None
-            group = self.conn.execute(f"SELECT CASE WHEN length(source_key)<=128 THEN source_key END FROM main.{_PLANS} WHERE fingerprint=?", (fingerprint,)).fetchone()
+            group = self.conn.execute(f"SELECT {_sql_text('source_key', 128)} FROM main.{_PLANS} WHERE fingerprint=?", (fingerprint,)).fetchone()
             if group is None:
                 return None
             _key(group[0])

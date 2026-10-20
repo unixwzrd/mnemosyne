@@ -266,12 +266,13 @@ def test_incompatible_optional_schema_refuses_without_repair(fx, kind):
     assert fx.conn.total_changes == before
 
 
-@pytest.mark.parametrize("corruption", ["bytes", "text", "ordinal", "span", "locator", "ceiling", "limits"])
+@pytest.mark.parametrize("corruption", ["bytes", "text", "equal-text", "ordinal", "span", "locator", "ceiling", "limits"])
 def test_corrupt_accounting_refuses_not_reset_to_zero(fx, corruption):
     receipt = fx.write()
     sql = {
         "bytes": "UPDATE media_source_index_excerpts SET utf8_bytes=1",
         "text": "UPDATE media_source_index_excerpts SET text='changed'",
+        "equal-text": "UPDATE media_source_index_excerpts SET text=replace(text, 'x', 'y')",
         "ordinal": "UPDATE media_source_index_excerpts SET ordinal=9",
         "span": "UPDATE media_source_index_excerpts SET char_end=1000000",
         "locator": "UPDATE media_source_index_plans SET output_locator='data:text/plain,hidden'",
@@ -420,6 +421,68 @@ def test_lost_commit_acknowledgement_is_recoverable_without_double_charge(tmp_pa
     conn.close()
 
 
+class LostBeginAcknowledgement(sqlite3.Connection):
+    armed = False
+
+    def execute(self, sql, parameters=()):
+        result = super().execute(sql, parameters)
+        if self.armed and sql == "BEGIN IMMEDIATE":
+            self.armed = False
+            raise sqlite3.OperationalError("synthetic lost begin acknowledgement")
+        return result
+
+
+def test_begin_failure_after_lock_acquisition_releases_owned_transaction(tmp_path):
+    conn = sqlite3.connect(tmp_path / "catalogue.db", factory=LostBeginAcknowledgement)
+    fx = Fixture(tmp_path, conn=conn)
+    conn.armed = True
+    with pytest.raises(sqlite3.OperationalError, match="lost begin acknowledgement"):
+        fx.write()
+    assert not conn.in_transaction
+    assert fx.write().status == "created"
+    conn.close()
+
+
+def test_savepoint_name_failure_does_not_leak_a_write_lock(fx, monkeypatch):
+    def failed_name():
+        raise MemoryError("synthetic name allocation failure")
+    with monkeypatch.context() as patch:
+        patch.setattr("mnemosyne.core.source_index_store.uuid4", failed_name)
+        with pytest.raises(MemoryError, match="synthetic name allocation failure"):
+            fx.write()
+    assert not fx.conn.in_transaction
+    assert fx.write().status == "created"
+
+
+class LostSavepointAcknowledgement(sqlite3.Connection):
+    armed = False
+    attempted_name = None
+
+    def execute(self, sql, parameters=()):
+        result = super().execute(sql, parameters)
+        if self.armed and sql.startswith("SAVEPOINT source_index_"):
+            self.armed = False
+            self.attempted_name = sql.split()[1]
+            raise sqlite3.OperationalError("synthetic lost savepoint acknowledgement")
+        return result
+
+
+def test_savepoint_creation_ack_failure_preserves_caller_without_leaking_savepoint(tmp_path):
+    conn = sqlite3.connect(tmp_path / "catalogue.db", factory=LostSavepointAcknowledgement)
+    fx = Fixture(tmp_path, conn=conn)
+    conn.execute("CREATE TABLE unrelated(value)")
+    conn.execute("INSERT INTO unrelated VALUES(13)")
+    conn.armed = True
+    with pytest.raises(sqlite3.OperationalError, match="lost savepoint acknowledgement"):
+        fx.write()
+    assert conn.in_transaction
+    assert conn.execute("SELECT value FROM unrelated").fetchone()[0] == 13
+    with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
+        conn.execute("RELEASE SAVEPOINT " + conn.attempted_name)
+    conn.rollback()
+    conn.close()
+
+
 @pytest.mark.parametrize("kind", ["asset-view", "revision-view", "nocase-key", "working-schema"])
 def test_native_schema_incompatibility_does_not_migrate(fx, kind):
     if kind == "asset-view":
@@ -437,3 +500,43 @@ def test_native_schema_incompatibility_does_not_migrate(fx, kind):
     with error("incompatible-native-schema"):
         fx.write()
     assert not fx.conn.in_transaction
+
+
+@pytest.mark.parametrize("table,column,numeric", [
+    ("media_source_index_groups", "per_excerpt_bytes", True),
+    ("media_source_index_groups", "retained_bytes", True),
+    ("media_source_index_groups", "excerpt_count", True),
+    ("media_source_index_groups", "byte_ceiling", True),
+    ("media_source_index_plans", "source_utf8_bytes", True),
+    ("media_source_index_excerpts", "ordinal", True),
+    ("media_source_index_excerpts", "char_start", True),
+    ("media_source_index_excerpts", "char_end", True),
+    ("media_source_index_excerpts", "utf8_bytes", True),
+    ("media_source_index_excerpts", "text", False),
+    ("media_source_index_excerpts", "text_sha256", False),
+    ("media_source_index_plans", "output_locator", False),
+    ("media_source_index_plans", "source_revision_id", False),
+    ("media_source_index_plans", "extraction_sha256", False),
+    ("media_source_index_assets", "asset_id", False),
+    ("media_assets", "ref_value", False),
+    ("media_assets", "ref_kind", False),
+])
+def test_corrupt_values_are_bounded_before_python_materialization(fx, table, column, numeric):
+    fx.write()
+    payload = b"X" * 92000 if numeric else "x\0" + "X" * 92000
+    fx.conn.execute(f"UPDATE {table} SET {column}=?", (payload,))
+    fx.conn.commit()
+    def bounded_rows(cursor, row):
+        assert all(not isinstance(value, (str, bytes)) or len(value) <= 4096 for value in row), "oversize corrupt value materialized"
+        return row
+    fx.conn.row_factory = bounded_rows
+    with pytest.raises(SourceIndexStoreError):
+        fx.store.usage("source:a")
+
+
+def test_valid_nul_and_multibyte_excerpts_roundtrip(fx):
+    text = "x\0🧭" + "padding " * 100
+    receipt = fx.write(text=text, spans=(SourceSpan(0, 3),))
+    result = fx.store.get_plan(receipt.fingerprint)
+    assert result.excerpts[0].text == "x\0🧭"
+    assert result.retained_utf8_bytes == 6
