@@ -238,6 +238,10 @@ results = beam.recall("editor preferences", top_k=5)
 
 ---
 
+### Source Revision Verification (Downstream Candidate)
+
+The opt-in `mnemosyne.core.source_verification.verify_source_revision` helper can check a registered revision against actual bytes through an explicitly supplied, trusted `ContentResolver`. It streams within a byte budget and returns a metadata-only observation, without storing original bytes, modifying the asserted revision or fetching during recall. It is an owner-mode diagnostic, not protected authorization or a guarantee about a later reopen. See the [S2a contract and limits](docs/source-verification-contract.md); this downstream API is not a released or deployed capability.
+
 ## Architecture
 
 ```
