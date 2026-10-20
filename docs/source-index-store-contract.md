@@ -34,6 +34,10 @@ S3b can qualify durable retention inside its own catalogue and inspect disposabl
 
 ## Qualification Checkpoint
 
+### Follow-Up: Explicit Bounded UTF-8 Decoding
+
+S4b's independent probes reproduced an inherited catalogue failure: bounded SQLite TEXT can contain malformed UTF-8, and returning it directly lets sqlite3's decoder include those stored bytes in an OperationalError. The source-integrity follow-up returns type/byte-bounded BLOB projections and decodes UTF-8 explicitly into a content-free `invalid-record` refusal. Valid Unicode, NUL-containing excerpts and external reference strings retain exact behavior. All existing schema, limits, fingerprints, native APIs and transaction ownership remain unchanged; no blanket catch hides real permission, busy or storage failures. This is independently reviewable from embedding reuse. The downstream ledger records its exact source, tests and artifact qualification; the original S3b checkpoint below remains historical evidence, not a claim that it already included this correction.
+
 Qualified source: `c6ad7f09753be6e816038a66955c5aaa25a15257`, dependent on S3a `4be70db`. This remains unreleased downstream work, not an upstream-approved schema or live installation. Initial `5af44cd` and intermediate `928c702` artifacts are superseded and retained; their catalogue formats are not silently migrated. S3a had no persistent catalogue to upgrade.
 
 All 83 new store cases and 110 retained admission cases pass on Python 3.12-3.14. Python 3.10/3.11 pass 191 combined cases with two explicit skips for the unavailable newer sqlite3 autocommit API. The selected source/policy/media/provider suite passes 1,410 with two unavailable real-Hermes-loader skips; unchanged adapter checks pass 759 with one pinned-host skip. Changed/fatal lint and generated-documentation checks pass. These are selected suites, not a green complete upstream CI matrix.

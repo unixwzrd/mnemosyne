@@ -102,7 +102,18 @@ def _integer(value, low, high):
 
 
 def _sql_text(column, maximum):
-    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={maximum} THEN {column} END"
+    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={maximum} THEN CAST({column} AS BLOB) END"
+
+
+def _decode_text(value):
+    if value is None:
+        return None
+    if type(value) is bytes:
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    raise SourceIndexStoreError("invalid-record")
 
 
 def _sql_int(column):
@@ -207,6 +218,7 @@ class SourceIndexStore:
         self._native_table("media_assets", "asset_id", {"asset_id", "ref_kind", "ref_value", "metadata", "title", "source", "provider", "provider_model"})
         self._native_table("media_moments", "moment_id", {"moment_id", "asset_id"})
         assets = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.{_ASSETS} WHERE source_key=? LIMIT 33", (source_key,)).fetchall()
+        assets = [(_decode_text(row[0]),) for row in assets]
         if not 1 <= len(assets) <= 32:
             raise SourceIndexStoreError("invalid-record")
         for (asset_id,) in assets:
@@ -218,8 +230,9 @@ class SourceIndexStore:
                 FROM main.media_assets WHERE asset_id=?""", (asset_id,)).fetchone()
             if row is None or row[0] != "url" or not row[2] or not row[3]:
                 raise SourceIndexStoreError("unaccounted-legacy-state")
-            _external_locator(row[1])
-            if compute_asset_id("url", row[1]) != asset_id:
+            locator = _decode_text(row[1])
+            _external_locator(locator)
+            if compute_asset_id("url", locator) != asset_id:
                 raise SourceIndexStoreError("invalid-record")
             if self.conn.execute("SELECT 1 FROM main.media_moments WHERE asset_id=? LIMIT 1", (asset_id,)).fetchone():
                 raise SourceIndexStoreError("unaccounted-legacy-state")
@@ -256,6 +269,7 @@ class SourceIndexStore:
             if rows:
                 self._native_table("media_source_revisions", "revision_id", {"revision_id", "asset_id"})
             for fingerprint, revision, digest, locator, source_size in rows:
+                fingerprint, revision, digest, locator = map(_decode_text, (fingerprint, revision, digest, locator))
                 _external_locator(locator)
                 if (
                     type(revision) is not str or re.fullmatch(r"revision:sha256:[0-9a-f]{64}", revision) is None
@@ -264,13 +278,14 @@ class SourceIndexStore:
                 ):
                     raise ValueError
                 native = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.media_source_revisions WHERE revision_id=?", (revision,)).fetchone()
-                if native is None or native[0] not in assets:
+                if native is None or _decode_text(native[0]) not in assets:
                     raise ValueError
                 excerpts = []
                 retained = previous_end = 0
                 for ordinal, start, end, text, size, text_hash in self.conn.execute(f"""SELECT {_sql_int('ordinal')}, {_sql_int('char_start')}, {_sql_int('char_end')},
                     {_sql_text('text', 4096)}, {_sql_int('utf8_bytes')}, {_sql_text('text_sha256', 64)}
                     FROM main.{_EXCERPTS} WHERE fingerprint=? ORDER BY ordinal LIMIT 129""", (fingerprint,)).fetchall():
+                    text, text_hash = _decode_text(text), _decode_text(text_hash)
                     if (
                         ordinal != len(excerpts) or type(text) is not str or not _integer(start, previous_end, MAX_EXTRACTION_BYTES)
                         or not _integer(end, start + 1, source_size) or end-start != len(text)
@@ -313,9 +328,10 @@ class SourceIndexStore:
             if current and current[0].limits != limits:
                 raise SourceIndexStoreError("limits-conflict")
             existing = self.conn.execute(f"SELECT {_sql_text('asset_id', 512)} FROM main.media_assets WHERE asset_id=? OR (ref_kind='url' AND ref_value=?)", (asset_id, locator)).fetchall()
+            existing = [(_decode_text(row[0]),) for row in existing]
             if existing:
                 mapped = self.conn.execute(f"SELECT {_sql_text('source_key', 128)} FROM main.{_ASSETS} WHERE asset_id=?", (asset_id,)).fetchone()
-                if len(existing) != 1 or existing[0][0] != asset_id or mapped is None or mapped[0] != source_key or current is None:
+                if len(existing) != 1 or existing[0][0] != asset_id or mapped is None or _decode_text(mapped[0]) != source_key or current is None:
                     raise SourceIndexStoreError("existing-asset-refused")
                 return SourceRegistration(asset_id, "unchanged", "committed" if owns else "pending")
             if current and current[0].alias_count >= 32:
@@ -380,8 +396,8 @@ class SourceIndexStore:
             group = self.conn.execute(f"SELECT {_sql_text('source_key', 128)} FROM main.{_PLANS} WHERE fingerprint=?", (fingerprint,)).fetchone()
             if group is None:
                 return None
-            _key(group[0])
-            current = self._audit(group[0])
+            source_key = _key(_decode_text(group[0]))
+            current = self._audit(source_key)
             if current is None or fingerprint not in current[1]:
                 raise SourceIndexStoreError("invalid-record")
             return current[1][fingerprint]
