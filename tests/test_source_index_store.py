@@ -546,6 +546,7 @@ def test_valid_nul_and_multibyte_excerpts_roundtrip(fx):
 @pytest.mark.parametrize("caller_owned", [False, True])
 def test_utf16_refuses_before_catalogue_or_content_without_converting_legacy(tmp_path, encoding, caller_owned):
     conn = sqlite3.connect(tmp_path / "utf16.db")
+    conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA encoding='{encoding}'")
     media = MediaStore(conn=conn)
     conn.execute("CREATE TABLE unrelated(value)")
