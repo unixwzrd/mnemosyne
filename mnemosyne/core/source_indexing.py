@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import hashlib
+import ipaddress
 import json
 import re
 from urllib.parse import urlsplit
@@ -11,6 +12,8 @@ MAX_EXTRACTION_BYTES = 8 * 1024 * 1024
 MAX_EXCERPT_BYTES = 4096
 MAX_RETAINED_BYTES = 32768
 MAX_EXCERPTS = 128
+_PCHAR = r"(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-Fa-f]{2})"
+_REG_NAME = r"(?:[A-Za-z0-9._~!$&'()*+,;=-]|%[0-9A-Fa-f]{2})"
 
 
 class SourceIndexError(ValueError):
@@ -69,17 +72,31 @@ def _external_locator(locator: str) -> None:
     if (
         type(locator) is not str or not locator or len(locator) > 4096
         or locator != locator.strip()
-        or any(ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF for char in locator)
+        or any(ord(char) <= 32 or ord(char) >= 127 for char in locator)
     ):
         raise SourceIndexError("invalid-locator")
     try:
         parsed = urlsplit(locator)
-        if parsed.scheme not in {"file", "http", "https", "archive"} or parsed.username or parsed.password:
+        if parsed.scheme not in {"file", "http", "https", "archive"} or "@" in parsed.netloc:
+            raise SourceIndexError("invalid-locator")
+        # urlsplit separates components; it intentionally is not a validator.
+        # Admit an ASCII RFC 3986 subset without decoding/repairing references.
+        if (
+            re.fullmatch(rf"(?:{_PCHAR}|/)*", parsed.path) is None
+            or re.fullmatch(rf"(?:{_PCHAR}|[/?])*", parsed.query) is None
+            or re.fullmatch(rf"(?:{_PCHAR}|[/?])*", parsed.fragment) is None
+        ):
             raise SourceIndexError("invalid-locator")
         if parsed.scheme == "file":
             if parsed.netloc not in {"", "localhost"} or not parsed.path.startswith("/"):
                 raise SourceIndexError("invalid-locator")
         elif not parsed.hostname:
+            raise SourceIndexError("invalid-locator")
+        elif parsed.netloc.startswith("["):
+            if re.fullmatch(r"\[[0-9A-Fa-f:.]+\](?::[0-9]*)?", parsed.netloc) is None:
+                raise SourceIndexError("invalid-locator")
+            ipaddress.IPv6Address(parsed.hostname)
+        elif re.fullmatch(rf"{_REG_NAME}+(?::[0-9]*)?", parsed.netloc) is None:
             raise SourceIndexError("invalid-locator")
         # Force validation of malformed numeric/out-of-range ports, without I/O.
         parsed.port

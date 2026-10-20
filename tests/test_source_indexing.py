@@ -162,6 +162,12 @@ def test_lower_limits_and_bypassed_constructor_are_rechecked():
     "https:///missing-host", "https://user:secret@host/path", "https://host:bad/path",
     "https://host:65536/path", "http://[bad", " archive://host/one", "archive://host/one\n",
     "archive://host/" + "x" * 4096, "archive://host/\ud800",
+    "https://bad host/path", "https://host/a b", "https://host/%", "https://host/%GG",
+    "https://host/%0G", "https://host/%A", "https://host/\\payload", "https://host/path?value={raw}",
+    "archive://bad host/one", "file:///tmp/a b", "https://host/[raw]", "https://host/?q=[raw]",
+    "https://host/path#fragment#extra", "https://host/é", "https://é/path", "file:///tmp/é",
+    "https://@host/path", "https://host:1:2/path", "https://[::1]extra/path",
+    "https://[v1.name]/path", "https://[fe80::1%25en0]/path",
 ])
 def test_invalid_external_reference(locator):
     refused("invalid-locator", lambda: plan(output_locator=locator))
@@ -171,6 +177,9 @@ def test_invalid_external_reference(locator):
     "file:///tmp/synthetic-extraction.txt", "file://localhost/tmp/synthetic.txt",
     "http://example.invalid/extract", "https://example.invalid:443/extract?revision=one",
     "archive://synthetic/extractions/one",
+    "https://[::1]:443/path", "http://[::ffff:192.0.2.1]/path", "https://host:0/path",
+    "https://host:/path", "https://host/%C3%A9?q=%2F%25#part-1", "file:///tmp/a%20b",
+    "https://xn--9ca.example/path", "archive://synthetic/one?name=a/b?c#part/?end",
 ])
 def test_valid_reference_is_retained_without_resolving(locator):
     assert plan(output_locator=locator).output_locator == locator
