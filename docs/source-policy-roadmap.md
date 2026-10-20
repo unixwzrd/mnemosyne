@@ -48,11 +48,21 @@ Exact-commit unreleased core wheel SHA-256: `543278f4e1ecaf0eb71a65a7932f4d17867
 
 The chosen absent-classification default is `unclassified` only where trusted inheritance does not supply a stricter classification. This is not public access: complete owner/audience/purpose and other restrictions still apply. SP1 supports explicitly bound unclassified records but does not yet implement ingestion normalization or migrate existing rows. Invalid explicit values are not defaulted. Legacy behavior remains unchanged.
 
+## Authorized Source Bytes
+
+SP2 adds the explicit [authorized exact-byte expansion seam](source-expansion-contract.md), depending on SP1 `f154dea`. It requires the additional `expand:source-revision` operation and a fresh trusted host grant bound to request/context/source/destination/budget and phase. One host-approved resolver open supplies the exact builtin bytes hashed by the existing verifier; no second open supplies the response. Policy and host authority are rechecked before open, every bounded read and release. No partial output, source-byte persistence, registry fallback, automatic tool/provider integration or protected activation is added. Caller-owned transactions refuse rather than span external I/O. The host remains responsible for real resolver confinement and timeouts.
+
+Corrected runtime `ce598fa3f1bbab3d20ec49839ef3e0f3f857f094` closes an independent review finding in initial `ee923f3`: after a successful chunk, cancellation could retain plaintext through verifier traceback locals despite outer-buffer cleanup. Completed frames, cause/context cycles and supported exception groups are now cleared while preserving cancellation identity/type/arguments and attempted stream closure. All six original cancellation probes now pass, alongside 14 focused independent recheck cases. The initial artifact and historical finding remain separately retained and superseded.
+
+At the corrected checkpoint, all 69 new cases pass on Python 3.11-3.14; Python 3.10 passes 68 with one explicit exception-group language-feature skip. The selected combined suite passes 1,217 with two unavailable real-Hermes-loader skips. The unchanged adapter suite is qualified separately with matching isolated artifact metadata; the ledger records its result and pinned-host limitation. The exact-runtime PyYAML-only installed-target smoke verifies 156 RECORD entries, retained SP1/source-verifier/journal behavior, single-open bytes, changed/denied outcomes, no payload writes and multi-chunk cancellation cleanup without source paths or detected provider/socket attempts. Core wheel SHA-256 `ca4747033d727e1de425d2621b800b034b166d80bf115807d6cebfcb61c22421`; adapter wheel `377b640e79041c86e8687d80c746e271e31d732ae97b7ce4ac893676a023d362`. These remain development artifacts, not published versions or live installations.
+
+All pre-existing runtime/adapter implementations remain byte-identical to SP1. This is not a paired performance result or a protected-readiness declaration. Cooperative checkpoint cancellation does not interrupt a blocked resolver or guarantee linearizable revocation after final authorization, and previously returned bytes cannot be retracted. Real resolver/adapter qualification, S3/S4 indexing budgets/recovery, P2/P3/P4 enforcement and R1 model-injection gates remain outstanding.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
 | --- | --- |
-| S2 remainder | Authorized exact-byte expansion on the integrated source/policy boundary and full resolver relocation/offline lifecycle; S2a/S2b verification and history alone do not authorize a later reopen |
+| S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
 | S3 | Reviewed excerpt/aggregate retention budgets and full-source search contract; no hidden full-document storage |
 | S4 | Resumable indexing, usable prior generations, idempotency, coverage and embedding reuse |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |

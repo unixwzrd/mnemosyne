@@ -246,6 +246,8 @@ The separate opt-in `SourceVerificationJournal` can retain those owner-reported 
 
 This combined downstream topic also supports explicit source-revision policy bindings and `PolicyReader.get_source_revision` for metadata-only reads. It requires a fresh trusted host grant plus both memory-bank and source-revision read permissions, and applies indexed eligibility before native source metadata. It returns no original bytes or locator and does not authorize expansion or enable protected mode. See the [SP1 source-policy contract](docs/source-policy-contract.md).
 
+The separate explicit `SourceExpander` can return bounded original bytes only after source authorization and checksum verification through one host-approved resolver open. It rechecks policy before each read and release, emits no partial output, uses no default resolver, and never persists the payload. This trusted-host seam is not wired into ordinary recall or an adapter and does not enable protected mode. See the [SP2 expansion contract and limits](docs/source-expansion-contract.md).
+
 ## Architecture
 
 ```
