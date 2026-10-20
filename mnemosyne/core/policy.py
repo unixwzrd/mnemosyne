@@ -210,6 +210,7 @@ class PolicySurface(str, Enum):
     BEAM = "beam"
     VECTOR = "vector"
     LEXICAL = "lexical"
+    HYBRID = "hybrid"
     GRAPH = "graph"
     DIRECT = "direct"
     WRITE = "write"

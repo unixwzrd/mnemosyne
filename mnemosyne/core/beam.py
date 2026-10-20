@@ -9510,6 +9510,18 @@ class BeamMemory:
             destination=destination, projects=projects, top_k=top_k, scan_limit=scan_limit,
         )
 
+    def recall_authorized_hybrid(self, query: str, query_embedding, *, embedding_model: str,
+                                 reader, destination: str, projects=None, top_k: int = 20,
+                                 candidate_limit: int = 200, scan_limit: int = 1000):
+        """Explicit authorized lexical/vector fusion; no ordinary recall fallback."""
+        from mnemosyne.core.policy_hybrid import recall_authorized_hybrid
+
+        return recall_authorized_hybrid(
+            self, query, query_embedding, embedding_model=embedding_model, reader=reader,
+            destination=destination, projects=projects, top_k=top_k,
+            candidate_limit=candidate_limit, scan_limit=scan_limit,
+        )
+
     def recall(self, query: str, top_k: int = 40, *,
                from_date: Optional[str] = None, to_date: Optional[str] = None,
                source: Optional[str] = None, topic: Optional[str] = None,
