@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import builtins
+import traceback
 from dataclasses import asdict, dataclass, replace
 from typing import Callable
 from uuid import uuid4
@@ -32,6 +34,21 @@ def _digest(value):
 def _budget(value):
     if type(value) is not int or not 0 <= value <= MAX_EXPANSION_BYTES:
         raise ValueError("max_bytes must be an integer in 0..1048576")
+
+
+def _clear_traceback_frames(error):
+    """Drop completed-frame payload locals without replacing cancellation."""
+    pending, seen = [error], set()
+    group_type = getattr(builtins, "BaseExceptionGroup", ())
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        traceback.clear_frames(current.__traceback__)
+        pending.extend(related for related in (current.__cause__, current.__context__) if related is not None)
+        if isinstance(current, group_type):
+            pending.extend(current.exceptions)
 
 
 @dataclass(frozen=True, repr=False)
@@ -230,6 +247,9 @@ class SourceExpander:
                 raise SourceExpansionError("unverified")
             released = checkpoint("release")
             return AuthorizedSourceBytes(source, destination, intent.request_id, released.decision_id, content, digest)
+        except BaseException as error:
+            _clear_traceback_frames(error)
+            raise
         finally:
             buffer.clear()
             content = None

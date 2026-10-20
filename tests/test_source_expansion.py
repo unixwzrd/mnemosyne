@@ -1,6 +1,8 @@
 """Synthetic SP2 exact-byte expansion; no live stores, providers or activation."""
 
 from dataclasses import replace
+import asyncio
+import builtins
 import hashlib
 import io
 import socket
@@ -511,4 +513,81 @@ def test_read_refusal_does_not_return_verifier_traceback_with_previous_chunk(hos
         names.append(frame.tb_frame.f_code.co_name)
         frame = frame.tb_next
     assert "verify_source_revision" not in names
+    assert host.streams[0].closed
+
+
+def assert_no_verifier_payload(error):
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        frame = current.__traceback__
+        while frame:
+            if frame.tb_frame.f_code.co_name == "verify_source_revision":
+                assert frame.tb_frame.f_locals == {}
+            if frame.tb_frame.f_code is SourceExpander.expand.__code__:
+                assert frame.tb_frame.f_locals.get("content") is None
+                assert frame.tb_frame.f_locals["buffer"] == bytearray()
+            assert not any(type(value) is bytes and value.startswith(b"CANCEL-PAYLOAD:")
+                           for value in frame.tb_frame.f_locals.values())
+            frame = frame.tb_next
+        pending.extend(related for related in (current.__cause__, current.__context__) if related is not None)
+        if isinstance(current, getattr(builtins, "BaseExceptionGroup", ())):
+            pending.extend(current.exceptions)
+
+
+@pytest.mark.parametrize("kind", [KeyboardInterrupt, asyncio.CancelledError, SystemExit])
+@pytest.mark.parametrize("site", ["authority", "stream"])
+def test_multichunk_cancellation_preserves_identity_but_not_plaintext_frames(host, kind, site):
+    host.data = b"CANCEL-PAYLOAD:" + b"x" * 70000
+    identity = host.register("cancel-multichunk")
+    reads = []
+    cancellation = kind("synthetic cancellation")
+
+    def read(stream, count):
+        reads.append(count)
+        if len(reads) == 2 and site == "stream":
+            raise cancellation
+
+    def gate(phase, intent):
+        if phase == "read" and len(reads) == 1 and site == "authority":
+            raise cancellation
+
+    host.read_hook, host.hook = read, gate
+    with pytest.raises(kind) as error:
+        host.expand(identity, max_bytes=1048576)
+    assert error.value is cancellation and error.value.args == ("synthetic cancellation",)
+    assert_no_verifier_payload(error.value)
+    assert host.streams[0].closed and host.streams[0].close_calls == 1
+    assert "release" not in [phase for phase, _ in host.phases]
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_cancellation_cause_context_cycles_and_groups_are_cleared(host, group):
+    if group and not hasattr(builtins, "BaseExceptionGroup"):
+        pytest.skip("exception groups require Python 3.11+")
+    host.data = b"CANCEL-PAYLOAD:" + b"x" * 70000
+    identity = host.register("cancel-chained")
+    cancellation = KeyboardInterrupt("synthetic cancellation")
+    reads = []
+
+    def read(stream, count):
+        reads.append(count)
+        if len(reads) == 2:
+            chunk = b"CANCEL-PAYLOAD:chained-local"
+            try:
+                raise RuntimeError("synthetic prior failure")
+            except RuntimeError as prior:
+                assert chunk
+                prior.__cause__ = cancellation
+                if group:
+                    raise builtins.BaseExceptionGroup("synthetic group", [cancellation, prior])
+                raise cancellation from prior
+
+    host.read_hook = read
+    with pytest.raises(BaseException) as error:
+        host.expand(identity, max_bytes=1048576)
+    assert_no_verifier_payload(error.value)
     assert host.streams[0].closed
