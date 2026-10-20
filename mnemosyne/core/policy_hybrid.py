@@ -39,7 +39,7 @@ class AuthorizedHybridRecall:
 
 def _scope(grant):
     return (grant.domain_id, grant.bank, grant.destination, grant.owners, grant.tenants,
-            getattr(grant, "projects", None))
+            getattr(grant, "projects", None), grant.lifecycle_epoch)
 
 
 def recall_authorized_hybrid(beam, query, query_embedding, *, embedding_model, reader, destination,
@@ -102,7 +102,7 @@ def _recall_authorized_hybrid(beam, query, query_embedding, *, embedding_model, 
             for rank, hit in enumerate(hits, 1):
                 key = (hit.record_kind, hit.record_id)
                 metadata = (hit.bank, hit.binding_id, hit.policy_id, hit.policy_version, hit.classification,
-                            hit.context_id, hit.context_epoch, hit.content, hit.content_truncated)
+                            hit.context_id, hit.context_epoch, hit.content, hit.content_truncated, hit.lifecycle_epoch)
                 if key in combined:
                     entry = combined[key]
                     if entry[0] != metadata:
@@ -118,7 +118,7 @@ def _recall_authorized_hybrid(beam, query, query_embedding, *, embedding_model, 
             result.append(AuthorizedHybridHit(hit.record_kind, hit.record_id, hit.bank, hit.binding_id,
                 hit.policy_id, hit.policy_version, hit.classification, final_grant.decision_id,
                 context.context_id, context.epoch, hit.content, score,
-                ranks.get("lexical"), ranks.get("vector"), hit.content_truncated))
+                ranks.get("lexical"), ranks.get("vector"), hit.content_truncated, lifecycle_epoch=final_grant.lifecycle_epoch))
         return AuthorizedHybridRecall(tuple(result), lexical.examined_candidates, lexical.truncated,
             vector.eligible_records, vector.scored_vectors, vector.missing_vectors,
             vector.embedding_model, vector.embedding_dimension, context.context_id, context.epoch,

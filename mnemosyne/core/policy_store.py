@@ -178,10 +178,13 @@ class PolicyStore:
             raise
 
     def _domain(self, *, required=False) -> Optional[PreparedDomain]:
+        from .policy_lifecycle import _present, _require_schema
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM main.sqlite_master WHERE type='table' AND name IN (?, ?, ?, ?, ?)", tuple(_COLUMNS),
         )}
         if not names:
+            if _present(self.conn):
+                raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
             if required:
                 raise PolicyStoreError(StoreErrorCode.UNPREPARED)
             return None
@@ -216,10 +219,15 @@ class PolicyStore:
         rows = self.conn.execute(
             "SELECT singleton, schema_version, contract_version, domain_id, mode FROM main.policy_store_state LIMIT 2"
         ).fetchall()
-        if len(rows) != 1 or tuple(rows[0][:3]) != (1, POLICY_SCHEMA_VERSION, POLICY_CONTRACT_VERSION) or rows[0][4] != "prepared":
+        if (len(rows) != 1 or type(rows[0][1]) is not int or rows[0][0] != 1
+            or rows[0][1] not in (POLICY_SCHEMA_VERSION, 2) or rows[0][2] != POLICY_CONTRACT_VERSION or rows[0][4] != "prepared"):
+            raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+        if rows[0][1] == 2:
+            _require_schema(self.conn)
+        elif _present(self.conn):
             raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
         try:
-            return PreparedDomain(_text(rows[0][3], "domain_id"))
+            return PreparedDomain(_text(rows[0][3], "domain_id"), schema_version=rows[0][1])
         except ValueError:
             raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE) from None
 

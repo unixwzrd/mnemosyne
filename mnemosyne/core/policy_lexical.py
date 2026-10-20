@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Tuple
 
 from mnemosyne.core.policy import AdapterCapabilities, PolicyRefusal, PolicySurface, RefusalReason, _number, _text
-from mnemosyne.core.policy_read import AuthorizedMemory, PolicyReader
+from mnemosyne.core.policy_read import AuthorizedMemory, PolicyReader, _guard_policy_output
 from mnemosyne.core.policy_store import PolicyStoreError, RecordKind, StoreErrorCode
 
 
@@ -48,6 +48,7 @@ class AuthorizedLexicalRecall:
     decision_id: str
 
 
+@_guard_policy_output
 def recall_authorized_lexical(beam, query, *, reader, destination, projects=None, top_k=20, candidate_limit=200):
     # Imports are lazy: legacy initialization and direct policy reads do not
     # acquire a dependency on BEAM's optional retrieval backends.
@@ -139,7 +140,12 @@ def recall_authorized_lexical(beam, query, *, reader, destination, projects=None
                         continue
                     content = _cap_recall_content(text)
                     hits.append(AuthorizedLexicalHit(kind, row[0], reader._bank, *row[1:5], grant.decision_id,
-                                                      context.context_id, context.epoch, content, score, len(content) < len(text)))
+                                                      context.context_id, context.epoch, content, score, len(content) < len(text),
+                                                      lifecycle_epoch=grant.lifecycle_epoch))
+        final = reader._release(context, grant, selection, destination)
+        if grant.lifecycle_epoch is not None:
+            hits = [replace(hit, decision_id=final.decision_id) for hit in hits]
+        grant = final
     hits.sort(key=lambda hit: (-hit.score, hit.record_kind.value, hit.record_id))
     return AuthorizedLexicalRecall(tuple(hits[:top_k]), candidate_limit, examined, truncated,
                                    context.context_id, context.epoch, grant.decision_id)

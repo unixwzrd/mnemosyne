@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Tuple
 
 from mnemosyne.core.policy import AdapterCapabilities, PolicyRefusal, PolicySurface, RefusalReason, _number, _text
 from mnemosyne.core.policy_lexical import MAX_SCORING_CHARACTERS
-from mnemosyne.core.policy_read import AuthorizedMemory, PolicyReader
+from mnemosyne.core.policy_read import AuthorizedMemory, PolicyReader, _guard_policy_output
 from mnemosyne.core.policy_store import PolicyStoreError, RecordKind, StoreErrorCode
 
 
@@ -51,6 +51,7 @@ def _require_vector_type(conn, table, dimension):
     return match[1].lower()
 
 
+@_guard_policy_output
 def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, destination,
                              projects=None, top_k=20, scan_limit=1000):
     from mnemosyne.core.beam import (
@@ -139,6 +140,11 @@ def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, 
                 raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
             content = _cap_recall_content(row[0])
             hits.append(AuthorizedVectorHit(kind, metadata[0], reader._bank, *metadata[1:], grant.decision_id,
-                                            context.context_id, context.epoch, content, score, len(content) < len(row[0])))
+                                            context.context_id, context.epoch, content, score, len(content) < len(row[0]),
+                                            lifecycle_epoch=grant.lifecycle_epoch))
+        final = reader._release(context, grant, selection, destination)
+        if grant.lifecycle_epoch is not None:
+            hits = [replace(hit, decision_id=final.decision_id) for hit in hits]
+        grant = final
     return AuthorizedVectorRecall(tuple(hits), eligible_count, scored_count, eligible_count - scored_count,
                                   embedding_model, EMBEDDING_DIM, context.context_id, context.epoch, grant.decision_id)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -16,6 +16,7 @@ from mnemosyne.core.policy import (
 from mnemosyne.core.policy_store import PolicyStore, PolicyStoreError, RecordKind, StoreErrorCode, _identity
 from mnemosyne.core.policy_lexical import _require_fts_surface
 from mnemosyne.runtime_context import get_access_context
+from mnemosyne.core.policy_read import _guard_policy_output
 
 
 MAX_CONTENT_CHARACTERS = 16384
@@ -62,6 +63,7 @@ class MemoryWriteGrant:
     destination: str
     decision_id: str
     policy: MemoryPolicy
+    lifecycle_epoch: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
         _digest(self.context_fingerprint, "context_fingerprint")
@@ -70,6 +72,8 @@ class MemoryWriteGrant:
             _text(getattr(self, name), name)
         if not isinstance(self.policy, MemoryPolicy):
             raise TypeError("policy must be an explicit MemoryPolicy")
+        if self.lifecycle_epoch is not None:
+            _number(self.lifecycle_epoch, "lifecycle_epoch", minimum=0)
 
 
 @dataclass(frozen=True, repr=False)
@@ -83,6 +87,7 @@ class AuthorizedCreation:
     context_epoch: int
     intent_fingerprint: str
     transaction_state: str
+    lifecycle_epoch: int | None = field(default=None, kw_only=True)
 
 
 def _native_surface(conn, kind):
@@ -114,6 +119,24 @@ class PolicyWriter:
         self._bank = _text(bank, "bank")
         self._verify = verify_context
 
+    def _grant(self, context, intent, destination):
+        try:
+            grant = self._verify(context, bank=self._bank, destination=destination, intent=intent)
+        except PolicyRefusal:
+            raise
+        except Exception:
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE) from None
+        if inspect.isawaitable(grant):
+            if inspect.iscoroutine(grant):
+                grant.close()
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        if not isinstance(grant, MemoryWriteGrant) or (grant.context_fingerprint, grant.intent_fingerprint, grant.bank, grant.destination) != (
+            context.fingerprint(), intent.fingerprint(), self._bank, destination
+        ):
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        return grant
+
+    @_guard_policy_output
     def create(self, beam, content, *, record_kind, record_id, destination):
         from mnemosyne.core.beam import BeamMemory
 
@@ -135,19 +158,8 @@ class PolicyWriter:
         if context.conversation_id != beam.session_id or self._bank not in context.banks or destination not in context.destinations or f"create:{record_kind.value}" not in context.operations:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         intent = MemoryWriteIntent(record_kind, identity, digest, len(content), context.conversation_id)
-        try:
-            grant = self._verify(context, bank=self._bank, destination=destination, intent=intent)
-        except PolicyRefusal:
-            raise
-        except Exception:
-            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE) from None
-        if inspect.isawaitable(grant):
-            if inspect.iscoroutine(grant):
-                grant.close()
-            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
-        if not isinstance(grant, MemoryWriteGrant) or (grant.context_fingerprint, grant.intent_fingerprint, grant.bank, grant.destination) != (
-            context.fingerprint(), intent.fingerprint(), self._bank, destination
-        ) or beam.conn is not self._store.conn or beam.session_id != intent.conversation_id:
+        grant = self._grant(context, intent, destination)
+        if beam.conn is not self._store.conn or beam.session_id != intent.conversation_id:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         policy = grant.policy
         if policy.classification_source != "context" or (policy.origin_context_id, policy.origin_context_epoch) != (context.context_id, context.epoch) or policy.owner not in context.principals:
@@ -160,6 +172,11 @@ class PolicyWriter:
             domain = self._store._domain(required=True)
             if domain.domain_id != grant.domain_id:
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+            if domain.schema_version == 2:
+                from .policy_lifecycle import require_epoch
+                require_epoch(conn, grant.lifecycle_epoch)
+            elif grant.lifecycle_epoch is not None:
+                raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             definition = self._store._definition(context.policy_id, context.policy_version)
             if definition is None:
                 raise PolicyRefusal(RefusalReason.POLICY_MISMATCH)
@@ -187,8 +204,16 @@ class PolicyWriter:
             persisted = self._store._binding(record_kind, identity, domain)
             if native is None or persisted is None or persisted.policy != policy:
                 raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+            if domain.schema_version == 2:
+                fresh = self._grant(context, intent, destination)
+                if (get_access_context(required=True).fingerprint() != context.fingerprint()
+                    or replace(fresh, decision_id=grant.decision_id) != grant
+                    or beam.conn is not self._store.conn or beam.session_id != intent.conversation_id):
+                    raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+                grant = fresh
         return AuthorizedCreation(record_kind, identity, self._bank, binding.binding_id, grant.decision_id,
-                                  context.context_id, context.epoch, intent.fingerprint(), "pending" if caller_owned else "committed")
+                                  context.context_id, context.epoch, intent.fingerprint(), "pending" if caller_owned else "committed",
+                                  lifecycle_epoch=grant.lifecycle_epoch)
 
 
 def create_authorized(beam, content, *, writer, record_kind, record_id, destination):

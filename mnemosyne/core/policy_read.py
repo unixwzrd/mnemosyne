@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from functools import wraps
 from typing import Callable, FrozenSet, Optional, Union
 
 from mnemosyne.core.policy import (
@@ -18,6 +19,18 @@ from mnemosyne.core.policy_projects import PolicyProjects
 from mnemosyne.runtime_context import get_access_context
 
 
+def _guard_policy_output(operation):
+    @wraps(operation)
+    def guarded(*args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except BaseException as error:
+            from .source_expansion import _clear_traceback_frames
+            _clear_traceback_frames(error)
+            raise
+    return guarded
+
+
 @dataclass(frozen=True, repr=False)
 class BankReadGrant:
     """Host-verified bank-wide scope; constructing a grant is not authentication."""
@@ -29,6 +42,7 @@ class BankReadGrant:
     decision_id: str
     owners: FrozenSet[str]
     tenants: FrozenSet[str] = frozenset()
+    lifecycle_epoch: Optional[int] = field(default=None, kw_only=True)
 
     def __post_init__(self):
         fingerprint = _text(self.context_fingerprint, "context_fingerprint", 64)
@@ -38,6 +52,8 @@ class BankReadGrant:
             _text(getattr(self, name), name)
         for name in ("owners", "tenants"):
             object.__setattr__(self, name, _labels(getattr(self, name), name))
+        if self.lifecycle_epoch is not None:
+            _number(self.lifecycle_epoch, "lifecycle_epoch", minimum=0)
 
 
 @dataclass(frozen=True, repr=False)
@@ -63,6 +79,7 @@ class AuthorizedCandidate:
     decision_id: str
     context_id: str
     context_epoch: int
+    lifecycle_epoch: Optional[int] = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, repr=False)
@@ -140,6 +157,14 @@ class PolicyReader:
         domain = self._store._domain(required=True)
         if domain.domain_id != grant.domain_id:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        lifecycle = ""
+        if domain.schema_version == 2:
+            from .policy_lifecycle import require_epoch
+            require_epoch(self._store.conn, grant.lifecycle_epoch)
+            self._release(context, grant, projects, grant.destination)
+            lifecycle = "AND NOT EXISTS (SELECT 1 FROM main.policy_quarantine AS q WHERE q.binding_id=b.binding_id)"
+        elif grant.lifecycle_epoch is not None:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         definition = self._store._definition(context.policy_id, context.policy_version)
         if definition is None:
             raise PolicyRefusal(RefusalReason.POLICY_MISMATCH)
@@ -185,10 +210,20 @@ class PolicyReader:
               AND NOT EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
                   WHERE t.binding_id=b.binding_id AND t.dimension NOT IN ('audiences','compartments','purposes'))
               {project_filter}
+              {lifecycle}
               {target}
         )"""
         return sql, params
 
+    def _release(self, context, grant, projects, destination):
+        if grant.lifecycle_epoch is not None:
+            current, fresh, _ = self._decision(destination, projects)
+            if current.fingerprint() != context.fingerprint() or replace(fresh, decision_id=grant.decision_id) != grant:
+                raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+            return fresh
+        return grant
+
+    @_guard_policy_output
     def _read(self, kind, *, destination, record_id=None, limit=100, offset=0, projects=None):
         context, grant, selection = self._decision(destination, projects)
         with self._store._transaction():
@@ -202,10 +237,12 @@ class PolicyReader:
                 ORDER BY n.id LIMIT ? OFFSET ?"""
             params.extend((limit, offset))
             rows = self._store.conn.execute(sql, params).fetchall()
+            grant = self._release(context, grant, selection, destination)
         result = []
         for row in rows:
             values = (kind, row[0], self._bank, *row[1:5], grant.decision_id, context.context_id, context.epoch)
-            result.append(AuthorizedCandidate(*values) if record_id is None else AuthorizedMemory(*values, row[5]))
+            result.append(AuthorizedCandidate(*values, lifecycle_epoch=grant.lifecycle_epoch) if record_id is None
+                          else AuthorizedMemory(*values, row[5], lifecycle_epoch=grant.lifecycle_epoch))
         return result
 
     def get(self, kind: RecordKind, record_id, *, destination: str, projects=None) -> Optional[AuthorizedMemory]:
@@ -216,6 +253,7 @@ class PolicyReader:
         records = self._read(kind, destination=destination, record_id=identity, limit=1, projects=projects)
         return records[0] if records else None
 
+    @_guard_policy_output
     def get_source_revision(self, revision_id: str, *, destination: str) -> Optional[AuthorizedSourceRevision]:
         """Read exact source metadata after indexed authorization, without I/O.
 
@@ -252,6 +290,7 @@ class PolicyReader:
                 AND EXISTS (SELECT 1 FROM main.media_assets AS a WHERE a.asset_id COLLATE BINARY=r.asset_id COLLATE BINARY)
                 LIMIT 1"""
             row = self._store.conn.execute(sql, params).fetchone()
+            grant = self._release(context, grant, None, grant.destination)
         if row is None:
             return None
         try:
@@ -266,7 +305,7 @@ class PolicyReader:
             raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE) from None
         return AuthorizedSourceRevision(RecordKind.SOURCE_REVISION, identity, self._bank, *row[:4],
                                         grant.decision_id, context.context_id, context.epoch,
-                                        asset, digest, representation, row[8], row[7])
+                                        asset, digest, representation, row[8], row[7], lifecycle_epoch=grant.lifecycle_epoch)
 
     def candidate_ids(self, kind: RecordKind, *, destination: str, limit: int = 100, offset: int = 0, projects=None):
         """List authorized native IDs/provenance without reading native content."""
