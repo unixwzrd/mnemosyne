@@ -1,0 +1,35 @@
+# Source Revision Policy Association (SP1)
+
+## Boundary
+
+This downstream increment combines accepted policy checkpoint `eca181d` and source checkpoint `d960a2e` at merge checkpoint `36560f1`. It adds immutable indexed source-revision policy associations and one explicit metadata-only read. It is not source expansion, protected activation, migration, release or deployment. Upstream proposals and CLA review remain separate. The maintained and fork `main` branches are unchanged.
+
+## Interfaces And Storage
+
+`RecordKind.SOURCE_REVISION` names the existing optional `media_source_revisions` table. Explicit owner-mode `PolicyStore.bind(kind, revision_id, MemoryPolicy(...))` reuses the policy catalog's existing immutable bindings and indexed terms. Source parent lookup uses exact binary `revision_id`, not a native memory's `id`. The known physical source table must already exist; unknown or partial layouts refuse. No new table, schema version, automatic classification, backfill or activation marker is added. Existing source/revision IDs and source metadata remain unchanged. Binding one revision does not authorize a corrected revision, another asset, its predecessor, an extraction or a cited memory.
+
+Bindings are explicit administrative owner operations, not authenticated model-facing tools. Their transactions preserve enclosing caller transactions; changed restrictions conflict rather than overwrite. Policy mutation/revocation workflows remain P3 work. A trusted process/database owner can bypass these APIs; no hostile-owner security boundary is claimed.
+
+`PolicyReader.get_source_revision(revision_id, destination=...)` requires both `read:bank` and `read:source-revision` in an authenticated effective context and a fresh synchronous host `BankReadGrant` bound to its fingerprint, domain, bank and destination. The host still authenticates every applicable participant, intersects grants and checks current epochs. Context/grant records are not credentials. A memory-read grant alone is insufficient. Project-selected source access, generic `get(SOURCE_REVISION, ...)`, source enumeration and source project-catalog operations refuse as unsupported rather than fall back.
+
+The existing materialized indexed policy predicate applies classification ceiling, owner, tenant, audience, purpose, all compartments and unsupported-restriction refusal before the source row becomes a result. Exact source identity uses binary comparison even with an unexpected native collation. The asset parent must still exist. Absent, denied, unbound and orphaned sources return `None`; missing context, invalid grants and unsupported paths raise content-free policy refusals. Unknown schemas or invalid authorized metadata raise content-free catalog errors.
+
+The result is an immutable `AuthorizedSourceRevision` carrying the binding/policy/decision/context provenance plus asset ID, asserted SHA-256, representation, optional byte size and digest status. It omits locators, original payloads, revision keys, predecessor IDs and extraction history. Sensitive fields are excluded from `repr`, not magically hidden from an authorized consumer. SQL projections bound string allocation, reject NULs before substring operations and avoid materializing wrongly typed size payloads; Python validates returned metadata. No result reports an asserted checksum as verified bytes.
+
+## Compatibility And Classification
+
+Construction and reads create no schema, fetch no source bytes, choose no resolver, embed nothing and call no provider. Legacy `MediaStore`, ordinary recall and native memory APIs are unchanged. Existing unconfigured clients retain their prior behavior; this optional boundary is not universal old-client enforcement. The prepared marker remains preparation only. No protected activation is exposed until P2-P4 cross-path gates pass.
+
+The operator selected `unclassified` for absent classification only when no trusted context/source/inheritance rule supplies a stricter value. This increment accepts explicitly bound `unclassified` records under a complete valid access policy; it does not implement ingestion normalization or migrate legacy rows. Missing bindings still grant nothing. Invalid explicit labels are not downgraded. Default provenance, trusted inheritance, preview/recovery and migration mechanics require their own follow-up contract and tests. `Unclassified` never means public access or permission to discard owner/audience restrictions.
+
+## Lifecycle And Unsupported Paths
+
+Each read obtains a fresh host decision before opening its SQLite snapshot. As with P2a-P2e, this does not implement linearizable revocation, participant-change cancellation or streaming gates. A returned metadata object is not a reusable capability and does not authorize opening a source later. Expansion must reauthorize the source and destination, constrain resolver access and verify the actual bytes consumed without a verify-then-reopen race. Journal observations do not grant access or prove freshness.
+
+Graph/hybrid/canonical mutation parity, derivative inheritance, source correction/revocation propagation, caches, exports/sync, administrative surfaces and SDK/CLI/MCP/Hermes integration remain unqualified. Existing legacy owner APIs can still read beyond these optional interfaces; protected stores must not be enabled on their strength. No constant-time denial or complete timing-side-channel claim is made. No public/default audience, private-memory copying, source-content archiving or production data change is included.
+
+## Qualification
+
+`tests/test_policy_sources.py` uses disposable synthetic sources/principals and tests positive metadata results, deny/absent equality, restricted metadata decoding, policy/grant/epoch/scope mismatch, missing required access rules, explicit unclassified access, immutable retries/conflicts, corrected revisions, caller rollback, read-only connections, missing/partial/view schemas, temporary shadowing, binary identity, bounded corrupt metadata, unsupported surfaces and the indexed materialized query plan. The creation suite also rejects source revisions before its verifier. Retain initial failures and fixes, exact source/artifact identities, interpreter results and independent-review findings in the downstream ledger.
+
+Existing retrieval/write modules unaffected by SP1 should remain byte-identical to their accepted checkpoints. This structural check is not a timing benchmark. The preceding shared-host write-tail increase remains unresolved, the provisional matched protected-recall budget is not measured here, and deferred performance investigation is not replaced with a claim of no regression. Zero unauthorized disclosure remains an activation gate, not a property inferred from this selected suite.

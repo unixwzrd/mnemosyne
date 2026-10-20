@@ -11,7 +11,9 @@ from mnemosyne.core.policy import (
     AccessContext, AdapterCapabilities, PolicyRefusal, PolicySurface, RefusalReason,
     _labels, _number, _text,
 )
-from mnemosyne.core.policy_store import PolicyStore, RecordKind, _identity
+from mnemosyne.core.policy_store import (
+    PolicyStore, PolicyStoreError, RecordKind, StoreErrorCode, _identity, _source_revision_schema,
+)
 from mnemosyne.core.policy_projects import PolicyProjects
 from mnemosyne.runtime_context import get_access_context
 
@@ -66,6 +68,17 @@ class AuthorizedCandidate:
 @dataclass(frozen=True, repr=False)
 class AuthorizedMemory(AuthorizedCandidate):
     content: str
+
+
+@dataclass(frozen=True, repr=False)
+class AuthorizedSourceRevision(AuthorizedCandidate):
+    """Authorized asserted metadata, not verified bytes or an expansion grant."""
+
+    asset_id: str
+    content_hash: str
+    representation: str
+    byte_size: Optional[int]
+    digest_status: str
 
 
 class PolicyReader:
@@ -198,13 +211,61 @@ class PolicyReader:
     def get(self, kind: RecordKind, record_id, *, destination: str, projects=None) -> Optional[AuthorizedMemory]:
         """Return one authorized record, or None for both absent and denied IDs."""
         identity = _identity(kind, record_id)
+        if kind is RecordKind.SOURCE_REVISION:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         records = self._read(kind, destination=destination, record_id=identity, limit=1, projects=projects)
         return records[0] if records else None
+
+    def get_source_revision(self, revision_id: str, *, destination: str) -> Optional[AuthorizedSourceRevision]:
+        """Read exact source metadata after indexed authorization, without I/O.
+
+        Requires both read:bank and read:source-revision. Source bytes, locators,
+        extraction history, project selections and expansion remain unsupported.
+        """
+        identity = _identity(RecordKind.SOURCE_REVISION, revision_id)
+        context = get_access_context(required=True)
+        if "read:source-revision" not in context.operations:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        context, grant, _ = self._decision(destination)
+        with self._store._transaction():
+            sql, params = self._selection(RecordKind.SOURCE_REVISION, context, grant, identity)
+            if not _source_revision_schema(self._store.conn):
+                return None
+            # Bound native field allocation even for owner-corrupted metadata.
+            fields = []
+            for column, maximum in (("asset_id", 512), ("content_hash", 64),
+                                    ("representation", 128), ("digest_status", 64)):
+                fields.append(f"CASE WHEN typeof(r.{column})='text' AND instr(r.{column},char(0))=0 "
+                              f"AND length(CAST(r.{column} AS BLOB)) BETWEEN 1 AND {maximum * 4} "
+                              f"THEN substr(r.{column},1,{maximum + 1}) ELSE NULL END")
+            sql += f""" SELECT e.binding_id,e.policy_id,e.policy_version,e.classification,
+                    {','.join(fields)},CASE WHEN typeof(r.byte_size) IN ('null','integer') THEN r.byte_size ELSE -1 END
+                FROM eligible AS e JOIN main.media_source_revisions AS r ON r.revision_id COLLATE BINARY=e.record_id COLLATE BINARY
+                WHERE EXISTS (SELECT 1 FROM main.media_assets AS a WHERE a.asset_id COLLATE BINARY=r.asset_id COLLATE BINARY)
+                LIMIT 1"""
+            row = self._store.conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        try:
+            asset = _text(row[4], "asset_id", 512)
+            digest = row[5]
+            representation = _text(row[6], "representation", 128)
+            if (not isinstance(digest, str) or len(digest) != 64
+                or any(c not in "0123456789abcdef" for c in digest) or row[7] != "asserted"
+                or (row[8] is not None and (type(row[8]) is not int or not 0 <= row[8] <= 2**63 - 1))):
+                raise ValueError("invalid source metadata")
+        except (TypeError, ValueError):
+            raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE) from None
+        return AuthorizedSourceRevision(RecordKind.SOURCE_REVISION, identity, self._bank, *row[:4],
+                                        grant.decision_id, context.context_id, context.epoch,
+                                        asset, digest, representation, row[8], row[7])
 
     def candidate_ids(self, kind: RecordKind, *, destination: str, limit: int = 100, offset: int = 0, projects=None):
         """List authorized native IDs/provenance without reading native content."""
         if not isinstance(kind, RecordKind):
             raise ValueError("record_kind must be a supported RecordKind")
+        if kind is RecordKind.SOURCE_REVISION:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         _number(limit, "limit")
         _number(offset, "offset", minimum=0)
         if limit > 1000:

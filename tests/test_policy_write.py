@@ -367,7 +367,7 @@ def test_policy_schema_and_native_schema_refusal(creation):
     assert beam.conn.execute("SELECT count(*) FROM working_memory").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("kind", [RecordKind.CANONICAL, "working_memory", None, {}])
+@pytest.mark.parametrize("kind", [RecordKind.CANONICAL, RecordKind.SOURCE_REVISION, "working_memory", None, {}])
 def test_unsupported_kind_never_reaches_verifier(creation, kind):
     with pytest.raises(PolicyRefusal, match="unsupported_surface"):
         create(creation, kind=kind)

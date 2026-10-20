@@ -122,6 +122,8 @@ class PolicyProjects:
             raise PolicyRefusal(RefusalReason.INVALID_SELECTION)
 
     def _binding(self, kind, identity, *, parent=False):
+        if kind is RecordKind.SOURCE_REVISION:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         domain = self._store._domain(required=True)
         binding = self._store._binding(kind, identity, domain)
         if binding is None:
@@ -151,6 +153,8 @@ class PolicyProjects:
 
     def get_membership(self, kind: RecordKind, record_id, project_id: str):
         identity, project_id = _identity(kind, record_id), _text(project_id, "project_id")
+        if kind is RecordKind.SOURCE_REVISION:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         with self._store._transaction():
             if self._domain() is None:
                 return None

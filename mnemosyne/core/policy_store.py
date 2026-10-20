@@ -27,6 +27,7 @@ class RecordKind(str, Enum):
     WORKING = "working_memory"
     EPISODIC = "episodic_memory"
     CANONICAL = "canonical_facts"
+    SOURCE_REVISION = "media_source_revisions"
 
 
 class StoreErrorCode(str, Enum):
@@ -98,7 +99,26 @@ def _identity(kind: RecordKind, record_id) -> str:
         raise ValueError("record_kind must be a supported RecordKind")
     if kind is RecordKind.CANONICAL:
         return str(_number(record_id, "record_id"))
-    return _text(record_id, "record_id", 512)
+    return _text(record_id, "record_id", 256 if kind is RecordKind.SOURCE_REVISION else 512)
+
+
+def _source_revision_schema(conn) -> bool:
+    """Require the known physical source table; never create or upgrade it."""
+    row = conn.execute("SELECT type FROM main.sqlite_master WHERE name='media_source_revisions'").fetchone()
+    if row is None:
+        return False
+    expected = (
+        ("revision_id", "TEXT", 0, 1), ("asset_id", "TEXT", 1, 0),
+        ("revision_key", "TEXT", 1, 0), ("content_hash", "TEXT", 1, 0),
+        ("representation", "TEXT", 1, 0), ("byte_size", "INTEGER", 0, 0),
+        ("predecessor_revision_id", "TEXT", 0, 0), ("archive_locator", "TEXT", 0, 0),
+        ("digest_status", "TEXT", 1, 0), ("registered_at", "TEXT", 1, 0),
+    )
+    columns = conn.execute("PRAGMA main.table_xinfo('media_source_revisions')").fetchall()
+    actual = tuple((r[1], r[2].upper(), r[3], r[5]) for r in columns)
+    if row[0] != "table" or actual != expected or any(r[6] != 0 for r in columns):
+        raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+    return True
 
 
 def _binding_id(domain_id: str, kind: RecordKind, record_id: str) -> str:
@@ -309,8 +329,13 @@ class PolicyStore:
             # Enum-only identifiers and explicit main schema defeat both SQL
             # injection and connection-local temp-table shadowing.
             table = record_kind.value
+            column = "id"
+            if record_kind is RecordKind.SOURCE_REVISION:
+                if not _source_revision_schema(self.conn):
+                    raise ValueError("native parent must exist before binding")
+                column = "revision_id COLLATE BINARY"
             exists = self.conn.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-            if exists is None or self.conn.execute(f'SELECT 1 FROM main."{table}" WHERE id=?', (record_id,)).fetchone() is None:
+            if exists is None or self.conn.execute(f'SELECT 1 FROM main."{table}" WHERE {column}=?', (record_id,)).fetchone() is None:
                 raise ValueError("native parent must exist before binding")
             existing = self._binding(record_kind, identity, domain)
             if existing is not None:
