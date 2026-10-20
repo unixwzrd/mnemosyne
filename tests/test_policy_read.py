@@ -272,6 +272,39 @@ def test_no_content_materialized_for_denied_rows_or_candidate_listing(fixture):
     assert len(materialized) == 1 and store.conn.row_factory is tripwire
 
 
+@pytest.mark.parametrize("autocommit", [None, True, False])
+def test_sql_content_evaluation_happens_only_for_authorized_direct_read(fixture, autocommit):
+    store, _, reader = fixture
+    if autocommit is not None and not hasattr(store.conn, "autocommit"):
+        pytest.skip("explicit sqlite3 autocommit mode requires Python 3.12+")
+    evaluated = []
+    armed = []
+
+    def content_tripwire(value):
+        if armed:
+            evaluated.append(value)
+            if value == CANARY:
+                raise AssertionError("denied SQL content was evaluated")
+        return value
+
+    store.conn.create_function("guard_content", 1, content_tripwire, deterministic=True)
+    store.conn.execute("DROP TABLE working_memory")
+    store.conn.execute("CREATE TABLE working_memory(id TEXT PRIMARY KEY, raw TEXT, content TEXT GENERATED ALWAYS AS (guard_content(raw)) VIRTUAL)")
+    store.conn.executemany("INSERT INTO working_memory(id,raw) VALUES (?,?)", [("allowed", "allowed synthetic"), ("denied", CANARY)])
+    store.conn.commit()
+    store.bind(RecordKind.WORKING, "allowed", restriction())
+    store.bind(RecordKind.WORKING, "denied", restriction(classification="sealed"))
+    if autocommit is not None:
+        store.conn.autocommit = autocommit
+    armed.append(True)
+    assert read(reader, "denied") is None
+    with bind_access_context(context()):
+        assert [r.record_id for r in reader.candidate_ids(RecordKind.WORKING, destination="channel:a")] == ["allowed"]
+    assert evaluated == []
+    assert read(reader, "allowed").content == "allowed synthetic"
+    assert evaluated == ["allowed synthetic"]
+
+
 def test_materialized_metadata_and_indexed_plan_before_content(fixture):
     store, registry, reader = fixture
     add(store, "w")
@@ -449,6 +482,7 @@ def test_snapshot_consistency_when_policy_changes_during_read(fixture):
         if statement.startswith("WITH eligible") and not triggered:
             triggered.append(True)
             other.execute("UPDATE policy_bindings SET classification='sealed' WHERE record_id='w'")
+            other.execute("UPDATE working_memory SET content=? WHERE id='w'", (CANARY,))
             other.commit()
 
     store.conn.set_trace_callback(during_read)
