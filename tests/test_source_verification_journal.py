@@ -447,3 +447,46 @@ def test_failure_after_actual_insert_rolls_back_only_owned_work(store, caller_ow
             conn.execute("RELEASE caller")
     finally:
         conn.close()
+
+
+def test_pinned_s2a_reader_and_writer_preserve_journal_events(store, tmp_path):
+    configured = os.environ.get("MNEMOSYNE_S2A_LEGACY_SOURCE")
+    if not configured:
+        pytest.skip("set pinned S2a source/revision for old-reader qualification")
+    source = Path(configured).resolve()
+    expected = os.environ.get("MNEMOSYNE_S2A_LEGACY_REVISION", "")
+    assert len(expected) == 40
+    assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == expected
+    subprocess.run(["git", "-C", str(source), "diff", "--quiet", "HEAD"], check=True)
+    value = observation(store)
+    journal = SourceVerificationJournal(store)
+    record(journal, value)
+    before = journal.list(value.revision_id)
+    script = '''
+import importlib.util, io, json, os
+from pathlib import Path
+from mnemosyne.core import media
+from mnemosyne.core.resolvers import CallableContentResolver
+from mnemosyne.core.source_verification import verify_source_revision
+assert Path(media.__file__).resolve().is_relative_to(Path(os.environ['PYTHONPATH']))
+assert importlib.util.find_spec('mnemosyne.core.source_verification_journal') is None
+path, revision_id = json.load(__import__('sys').stdin)
+store = media.MediaStore(db_path=Path(path))
+try:
+    assert store.get_source_revision(revision_id)['digest_status'] == 'asserted'
+    resolver = CallableContentResolver('old-fixture', frozenset({'archive'}),
+        open_func=lambda _: io.BytesIO(b'original synthetic source'))
+    assert verify_source_revision(store, revision_id, locator='archive://source/moved', resolver=resolver).status == 'verified'
+    store.upsert_asset(ref_kind='url', ref_value='archive://legacy/new-asset', modality='image')
+finally:
+    store.conn.close()
+'''
+    env = {"PATH": os.defpath, "HOME": str(tmp_path), "PYTHONPATH": str(source),
+           "MNEMOSYNE_DATA_DIR": str(tmp_path / "unused"), "MNEMOSYNE_NO_EMBEDDINGS": "1",
+           "MNEMOSYNE_LLM_ENABLED": "false"}
+    completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, env=env,
+                               input=json.dumps([str(store.db_path), value.revision_id]),
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert journal.list(value.revision_id) == before
+    assert store.find_asset_by_ref("url", "archive://legacy/new-asset") is not None
