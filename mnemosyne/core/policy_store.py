@@ -155,19 +155,20 @@ class PolicyStore:
     @contextmanager
     def _transaction(self, *, write=False):
         owns = not self.conn.in_transaction
-        if owns and write:
-            self.conn.execute("BEGIN IMMEDIATE")
-        started = False
         savepoint = "policy_catalog_" + uuid4().hex
+        attempted = False
         try:
+            if owns and write:
+                self.conn.execute("BEGIN IMMEDIATE")
+            # A driver may execute successfully and then lose the acknowledgment.
+            attempted = True
             self.conn.execute(f"SAVEPOINT {savepoint}")
-            started = True
             yield
             self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             if owns and write:
                 self.conn.execute("COMMIT")
         except BaseException:
-            if started:
+            if attempted:
                 with suppress(sqlite3.Error):
                     self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                     self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")

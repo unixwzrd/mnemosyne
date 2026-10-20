@@ -291,6 +291,58 @@ def test_caller_transactions_and_same_named_savepoints_remain_owned(store):
     assert rows(store.conn, "working_memory") == [("w", "synthetic working")]
 
 
+@pytest.mark.parametrize("write", [False, True])
+@pytest.mark.parametrize("caller_owned", [False, True])
+def test_savepoint_identity_failure_never_acquires_or_changes_transaction(store, monkeypatch, write, caller_owned):
+    from mnemosyne.core import policy_store as module
+    if caller_owned:
+        store.conn.execute("UPDATE working_memory SET content='pending' WHERE id='w'")
+
+    def cancel():
+        raise KeyboardInterrupt("synthetic identity failure")
+
+    monkeypatch.setattr(module, "uuid4", cancel)
+    with pytest.raises(KeyboardInterrupt, match="identity failure"):
+        with store._transaction(write=write):
+            raise AssertionError("body reached")
+    assert store.conn.in_transaction == caller_owned
+    assert rows(store.conn, "working_memory") == [("w", "pending" if caller_owned else "synthetic working")]
+    store.conn.rollback()
+
+
+@pytest.mark.parametrize("stage,caller_owned", [("BEGIN IMMEDIATE", False), ("SAVEPOINT", False), ("SAVEPOINT", True)])
+def test_lost_transaction_setup_ack_is_cleaned_without_undoing_caller(tmp_path, stage, caller_owned):
+    class Failure(sqlite3.Connection):
+        fail = False
+        savepoint_name = None
+
+        def execute(self, sql, parameters=()):
+            result = super().execute(sql, parameters)
+            if self.fail and sql.startswith(stage):
+                self.fail = False
+                self.savepoint_name = sql.split()[-1] if stage == "SAVEPOINT" else None
+                raise KeyboardInterrupt("synthetic setup acknowledgment lost")
+            return result
+
+    conn = sqlite3.connect(tmp_path / "setup.db", factory=Failure)
+    try:
+        native(conn)
+        if caller_owned:
+            conn.execute("UPDATE working_memory SET content='pending' WHERE id='w'")
+        conn.fail = True
+        with pytest.raises(KeyboardInterrupt, match="acknowledgment lost"):
+            with PolicyStore(conn)._transaction(write=True):
+                raise AssertionError("body reached")
+        assert conn.in_transaction == caller_owned
+        assert rows(conn, "working_memory") == [("w", "pending" if caller_owned else "synthetic working")]
+        if conn.savepoint_name is not None:
+            with pytest.raises(sqlite3.OperationalError, match="no such savepoint"):
+                conn.execute("RELEASE SAVEPOINT " + conn.savepoint_name)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def test_failed_savepoint_creation_does_not_rewind_same_named_caller_savepoint(store):
     conn = store.conn
     conn.execute("BEGIN")
