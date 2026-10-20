@@ -475,11 +475,82 @@ def test_v2_outputs_bind_the_final_fresh_decision(lifecycle):
         return replace(registry(c, **kw), decision_id=f"lease:{len(calls)}", lifecycle_epoch=catalog.epoch())
 
     reader = PolicyReader(store, bank="bank:a", verify_context=verify)
-    for mode in ("direct", "candidates", "lexical", "vector", "hybrid"):
+    with bind_access_context(ctx):
+        hit = reader.get(RecordKind.WORKING, "root", destination="channel:a")
+        assert hit.decision_id == f"lease:{len(calls)}"
+    for mode in ("candidates", "lexical", "vector", "hybrid"):
         hits = recall((beam,store,ctx,registry,reader,catalog), mode)
+        assert all(hit.decision_id == f"lease:{len(calls)}" for hit in hits)
+
+
+@pytest.mark.parametrize("mode", ["direct", "candidates", "lexical", "vector", "hybrid"])
+def test_final_verifier_context_rebinding_refuses_before_return(lifecycle, mode):
+    beam, store, ctx, registry, _, catalog = lifecycle
+    add(lifecycle, "root")
+    calls, entered, switch_at = [], [], None
+
+    def verify(c, **kw):
+        calls.append(True)
+        grant = replace(registry(c, **kw), lifecycle_epoch=catalog.epoch())
+        if len(calls) == switch_at:
+            manager = bind_access_context(replace(ctx, context_id="ctx:changed-after-verification"))
+            manager.__enter__()
+            entered.append(manager)
+        return grant
+
+    reader = PolicyReader(store, bank="bank:a", verify_context=verify)
+    def call():
         if mode == "direct":
-            # The helper does four direct lookups; the first result must carry
-            # its own third (release) receipt, not the last absent-ID receipt.
-            assert hits[0].decision_id.startswith("lease:") and int(hits[0].decision_id.split(":")[1]) == len(calls)-9
-        else:
-            assert all(hit.decision_id == f"lease:{len(calls)}" for hit in hits)
+            return reader.get(RecordKind.WORKING, "root", destination="channel:a")
+        if mode == "candidates":
+            return reader.candidate_ids(RecordKind.WORKING, destination="channel:a")
+        if mode == "lexical":
+            return beam.recall_authorized_lexical("orion gateway", reader=reader, destination="channel:a")
+        options = dict(embedding_model=beam_module._embeddings._DEFAULT_MODEL, reader=reader, destination="channel:a")
+        if mode == "vector":
+            return beam.recall_authorized_vector((1.,0.,0.,0.), **options)
+        return beam.recall_authorized_hybrid("orion gateway", (1.,0.,0.,0.), **options)
+
+    with bind_access_context(ctx):
+        assert call() is not None
+    switch_at = len(calls)
+    calls.clear()
+    with bind_access_context(ctx):
+        try:
+            with pytest.raises(PolicyRefusal, match="access_denied"):
+                call()
+            assert entered
+        finally:
+            for manager in reversed(entered):
+                manager.__exit__(None,None,None)
+
+
+def test_source_final_verifier_context_rebinding_refuses(fixture):
+    _, store, registry, _ = fixture
+    identity = source(fixture)
+    catalog = PolicyLifecycle(store)
+    catalog.prepare()
+    ctx = source_context()
+    calls, entered, switch_at = [], [], None
+
+    def verify(c, **kw):
+        calls.append(True)
+        grant = replace(registry(c, **kw), lifecycle_epoch=catalog.epoch())
+        if len(calls) == switch_at:
+            manager = bind_access_context(replace(ctx, context_id="source:changed"))
+            manager.__enter__()
+            entered.append(manager)
+        return grant
+
+    reader = PolicyReader(store, bank="bank:a", verify_context=verify)
+    with bind_access_context(ctx):
+        assert reader.get_source_revision(identity, destination="channel:a")
+    switch_at = len(calls)
+    calls.clear()
+    with bind_access_context(ctx):
+        try:
+            with pytest.raises(PolicyRefusal, match="access_denied"):
+                reader.get_source_revision(identity, destination="channel:a")
+        finally:
+            for manager in reversed(entered):
+                manager.__exit__(None,None,None)

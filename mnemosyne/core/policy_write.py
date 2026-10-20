@@ -132,7 +132,7 @@ class PolicyWriter:
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         if not isinstance(grant, MemoryWriteGrant) or (grant.context_fingerprint, grant.intent_fingerprint, grant.bank, grant.destination) != (
             context.fingerprint(), intent.fingerprint(), self._bank, destination
-        ):
+        ) or get_access_context(required=True).fingerprint() != context.fingerprint():
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return grant
 

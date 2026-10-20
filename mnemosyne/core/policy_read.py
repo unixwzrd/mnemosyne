@@ -140,6 +140,7 @@ class PolicyReader:
         if not isinstance(grant, BankReadGrant) or (
             grant.context_fingerprint != context.fingerprint()
             or grant.bank != self._bank or grant.destination != destination
+            or get_access_context(required=True).fingerprint() != context.fingerprint()
         ):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         if selection is None:
