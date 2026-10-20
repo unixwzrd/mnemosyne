@@ -106,12 +106,17 @@ class SourceIndexGenerations:
         self.conn = conn
 
     def _schema(self, *, create=False):
+        expected = {**_DDL, **_INDEX_DDL}
+        if self.conn.execute(
+            "SELECT 1 FROM temp.sqlite_master WHERE name IN (" + ",".join("?" for _ in expected) + ") LIMIT 1",
+            tuple(expected),
+        ).fetchone():
+            raise SourceIndexStoreError("incompatible-generation-schema")
         if not self.store._schema():
             if self.conn.execute("SELECT 1 FROM main.sqlite_master WHERE name IN (?,?,?) LIMIT 1",
                                  (_GENERATIONS, _ITEMS, _HEADS)).fetchone():
                 raise SourceIndexStoreError("invalid-generation-record")
             return False
-        expected = {**_DDL, **_INDEX_DDL}
         rows = self.conn.execute("SELECT name,type,sql,tbl_name FROM main.sqlite_master").fetchall()
         present = {row[0]: row for row in rows if row[0] in expected}
         if not present:
@@ -133,11 +138,6 @@ class SourceIndexGenerations:
             if (kind == "trigger" and table in _DDL
                 or kind == "index" and table in _DDL and sql is not None and name not in _INDEX_DDL):
                 raise SourceIndexStoreError("incompatible-generation-schema")
-        if self.conn.execute(
-            "SELECT 1 FROM temp.sqlite_master WHERE name IN (" + ",".join("?" for _ in expected) + ") LIMIT 1",
-            tuple(expected),
-        ).fetchone():
-            raise SourceIndexStoreError("incompatible-generation-schema")
         for child, column, parent, key in (
             (_GENERATIONS, "source_key", "media_source_index_groups", "source_key"),
             (_GENERATIONS, "parent_id", _GENERATIONS, "generation_id"),

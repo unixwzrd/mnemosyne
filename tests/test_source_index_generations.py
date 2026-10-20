@@ -312,6 +312,26 @@ def test_unknown_schema_refuses_without_repair(fx, sql):
         fx.generations.get(generation)
 
 
+@pytest.mark.parametrize("registered", (False, True))
+@pytest.mark.parametrize("name", (
+    "media_source_index_heads", "media_source_index_generations",
+    "media_source_index_generation_items", "idx_source_index_generation_key",
+))
+def test_temp_reserved_names_refuse_even_without_main_schema(tmp_path, registered, name):
+    conn = sqlite3.connect(tmp_path / "temp-only.db")
+    if registered:
+        MediaStore(conn=conn)
+        SourceIndexStore(conn).register_source("source:a", "archive://synthetic/original")
+    conn.execute(f"CREATE TEMP TABLE {name}(value)")
+    generations = SourceIndexGenerations(conn)
+    for read in (lambda: generations.get("a" * 64), lambda: generations.current("source:a")):
+        with error("incompatible-generation-schema"):
+            read()
+        assert not conn.in_transaction
+    assert not conn.execute("SELECT 1 FROM main.sqlite_master WHERE name='media_source_index_generations'").fetchone()
+    conn.close()
+
+
 def test_orphan_items_refuse_even_with_foreign_keys_disabled(fx):
     fx.publish()
     fx.conn.execute("INSERT INTO media_source_index_generation_items VALUES(?,0,?,'planned',NULL)", ("c" * 64, "d" * 64))
