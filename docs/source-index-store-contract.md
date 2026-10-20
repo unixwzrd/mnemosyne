@@ -24,6 +24,8 @@ Owned writes use `BEGIN IMMEDIATE` and a unique savepoint. Caller-owned transact
 
 Optional tables and indexes must match the declared schema; partial schemas, views, shadow objects, extra indexes and catalogue triggers refuse instead of being repaired. Read methods do not create schema. Owner-mode `usage(source_key)` and `get_plan(fingerprint)` return validated bounded records from the caller's current snapshot; they are not authorization, fresh source verification or permission to inject text into a model. Missing catalogue reads return `None`.
 
+Only a UTF-8 `main` database is supported by this catalogue. A read-only `PRAGMA main.encoding` check runs before catalogue creation or content projections; other encodings refuse with `unsupported-encoding`, without converting the database or changing legacy MediaStore APIs. SQLite's [TEXT-to-BLOB cast uses the database encoding](https://www.sqlite.org/lang_expr.html#castexpr), and [database encoding is separately configured](https://www.sqlite.org/pragma.html#pragma_encoding), so accepting UTF-16 without this precondition would not bound returned UTF-8 bytes correctly.
+
 Corrupt-row projections use SQL type guards and UTF-8 byte-length limits before values reach Python; NUL-containing text is not bounded by SQLite's character `length()` alone. Valid bounded NUL/multibyte excerpts remain supported. This bounds returned Python payloads, not SQLite page I/O or its transient native allocations while evaluating a damaged database. Caller connection hooks and storage failures may themselves prevent cleanup; the handle does not close a connection owned by someone else.
 
 ## Acceptance Boundary

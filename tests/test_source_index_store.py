@@ -540,3 +540,35 @@ def test_valid_nul_and_multibyte_excerpts_roundtrip(fx):
     result = fx.store.get_plan(receipt.fingerprint)
     assert result.excerpts[0].text == "x\0🧭"
     assert result.retained_utf8_bytes == 6
+
+
+@pytest.mark.parametrize("encoding", ["UTF-16le", "UTF-16be"])
+@pytest.mark.parametrize("caller_owned", [False, True])
+def test_utf16_refuses_before_catalogue_or_content_without_converting_legacy(tmp_path, encoding, caller_owned):
+    conn = sqlite3.connect(tmp_path / "utf16.db")
+    conn.execute(f"PRAGMA encoding='{encoding}'")
+    media = MediaStore(conn=conn)
+    conn.execute("CREATE TABLE unrelated(value)")
+    conn.commit()
+    if caller_owned:
+        conn.execute("INSERT INTO unrelated VALUES(19)")
+    store = SourceIndexStore(conn)
+    for call in (
+        lambda: store.register_source("source:a", "archive://synthetic/new"),
+        lambda: store.usage("source:a"),
+        lambda: store.get_plan("a" * 64),
+        lambda: store.write("source:a", "revision:sha256:" + "a" * 64, TEXT,
+            extraction_sha256=hashlib.sha256(TEXT.encode()).hexdigest(), output_locator="archive://synthetic/extract", spans=()),
+    ):
+        with error("unsupported-encoding"):
+            call()
+        assert conn.in_transaction == caller_owned
+        assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'media_source_index_%'").fetchone()
+        assert conn.execute("SELECT count(*) FROM media_assets").fetchone()[0] == 0
+    assert conn.execute("PRAGMA encoding").fetchone()[0] == encoding
+    if caller_owned:
+        assert conn.execute("SELECT value FROM unrelated").fetchone()[0] == 19
+        conn.rollback()
+    old = media.upsert_asset(ref_kind="url", ref_value="archive://synthetic/legacy", modality="document")
+    assert media.get_asset(old.asset_id)["ref_value"] == "archive://synthetic/legacy"
+    conn.close()

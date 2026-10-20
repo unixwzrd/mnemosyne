@@ -142,6 +142,9 @@ class SourceIndexStore:
             raise
 
     def _schema(self, *, create=False):
+        encoding = self.conn.execute("PRAGMA main.encoding").fetchone()
+        if encoding is None or encoding[0] != "UTF-8":
+            raise SourceIndexStoreError("unsupported-encoding")
         expected = {**_DDL, **_INDEX_DDL}
         rows = self.conn.execute("SELECT name, type, sql, tbl_name FROM main.sqlite_master").fetchall()
         present = {row[0]: row for row in rows if row[0] in expected}
