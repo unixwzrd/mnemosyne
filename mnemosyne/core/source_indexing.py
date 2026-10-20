@@ -104,6 +104,15 @@ def _external_locator(locator: str) -> None:
         raise SourceIndexError("invalid-locator") from None
 
 
+def _plan_fingerprint(revision, digest, locator, source_size, limits, spans):
+    identity = [
+        "source-index-plan:v1", revision, digest, locator, source_size,
+        limits.per_excerpt_bytes, limits.retained_bytes, limits.excerpt_count,
+        [[span.start, span.end] for span in spans],
+    ]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
 def plan_source_index(
     source_revision_id: str,
     extracted_text: str,
@@ -167,12 +176,8 @@ def plan_source_index(
         selected.append(SourceExcerpt(span, text, size))
         previous_end = span.end
 
-    identity = [
-        "source-index-plan:v1", source_revision_id, extraction_sha256, output_locator,
-        source_size, limits.per_excerpt_bytes, limits.retained_bytes, limits.excerpt_count,
-        [[excerpt.span.start, excerpt.span.end] for excerpt in selected],
-    ]
-    fingerprint = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+    fingerprint = _plan_fingerprint(source_revision_id, extraction_sha256, output_locator,
+                                    source_size, limits, tuple(excerpt.span for excerpt in selected))
     return SourceIndexPlan(
         source_revision_id, extraction_sha256, output_locator, source_size, retained, limits,
         "excerpts" if selected else "reference-only", tuple(selected), fingerprint,
