@@ -644,6 +644,14 @@ class SourceRevisionWrite:
     status: str
 
 
+@dataclass(frozen=True)
+class ExtractionRevisionWrite:
+    """Result of metadata-only extraction registration, not evidence verification."""
+
+    extraction_revision_id: str
+    status: str
+
+
 def _revision_text(value: str, name: str, maximum: int) -> str:
     if (
         not isinstance(value, str) or not value.strip() or len(value) > maximum
@@ -818,6 +826,148 @@ class MediaStore:
     def _has_source_revision_schema(self) -> bool:
         return self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_source_revisions'"
+        ).fetchone() is not None
+
+    def register_extraction_revision(
+        self, source_revision_id: str, moment_id: str, *, revision_key: str,
+        extractor: str, extractor_version: str, config_hash: str, output_hash: str,
+        output_locator: Optional[str] = None,
+        predecessor_extraction_revision_id: Optional[str] = None,
+    ) -> "ExtractionRevisionWrite":
+        """Append an asserted extraction/correction record without replacing text.
+
+        The existing moment anchors a span, not a newly verified text version.
+        A correction links to an earlier extraction of that same byte revision
+        and moment. Output bytes remain external; legacy recall is unchanged.
+        """
+        source_revision_id = _revision_text(source_revision_id, "source_revision_id", 256)
+        moment_id = _revision_text(moment_id, "moment_id", 256)
+        revision_key = _revision_text(revision_key, "revision_key", 256)
+        extractor = _revision_text(extractor, "extractor", 128)
+        extractor_version = _revision_text(extractor_version, "extractor_version", 128)
+        for name, value in (("config_hash", config_hash), ("output_hash", output_hash)):
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+                raise ValueError(f"{name} must be a SHA-256 hex digest")
+        config_hash, output_hash = config_hash.lower(), output_hash.lower()
+        if output_locator is not None:
+            output_locator = _revision_text(output_locator, "output_locator", 4096)
+            if urlsplit(output_locator).scheme.lower() in {"data", "javascript"}:
+                raise ValueError("output_locator must reference external evidence, not an inline payload")
+        if predecessor_extraction_revision_id is not None:
+            predecessor_extraction_revision_id = _revision_text(
+                predecessor_extraction_revision_id, "predecessor_extraction_revision_id", 256,
+            )
+        identity = json.dumps(["v1", source_revision_id, moment_id, revision_key], separators=(",", ":"))
+        extraction_id = "extraction:sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if predecessor_extraction_revision_id == extraction_id:
+            raise ValueError("an extraction cannot be its own predecessor")
+        expected = (
+            source_revision_id, moment_id, revision_key, extractor, extractor_version,
+            config_hash, output_hash, output_locator, predecessor_extraction_revision_id,
+        )
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("SAVEPOINT media_extraction_write")
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS media_extraction_revisions (
+                    extraction_revision_id TEXT PRIMARY KEY,
+                    source_revision_id TEXT NOT NULL,
+                    moment_id TEXT NOT NULL,
+                    revision_key TEXT NOT NULL,
+                    extractor TEXT NOT NULL,
+                    extractor_version TEXT NOT NULL,
+                    config_hash TEXT NOT NULL,
+                    output_hash TEXT NOT NULL,
+                    output_locator TEXT,
+                    predecessor_extraction_revision_id TEXT,
+                    digest_status TEXT NOT NULL DEFAULT 'asserted',
+                    registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(source_revision_id, moment_id, revision_key)
+                )
+            """)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_extraction_revision_parent "
+                "ON media_extraction_revisions(source_revision_id, moment_id, registered_at, extraction_revision_id)"
+            )
+            cursor = self.conn.execute("""
+                INSERT INTO media_extraction_revisions (
+                    extraction_revision_id, source_revision_id, moment_id, revision_key,
+                    extractor, extractor_version, config_hash, output_hash, output_locator,
+                    predecessor_extraction_revision_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_revision_id, moment_id, revision_key) DO NOTHING
+            """, (extraction_id, *expected))
+            if not self._has_source_revision_schema():
+                raise ValueError("source revision and moment must exist for the same asset")
+            parent = self.conn.execute("""
+                SELECT 1 FROM media_source_revisions AS r
+                JOIN media_moments AS m ON m.asset_id = r.asset_id
+                JOIN media_assets AS a ON a.asset_id = r.asset_id
+                WHERE r.revision_id = ? AND m.moment_id = ?
+            """, (source_revision_id, moment_id)).fetchone()
+            if parent is None:
+                raise ValueError("source revision and moment must exist for the same asset")
+            if predecessor_extraction_revision_id is not None:
+                predecessor = self.conn.execute("""
+                    SELECT source_revision_id, moment_id FROM media_extraction_revisions
+                    WHERE extraction_revision_id = ?
+                """, (predecessor_extraction_revision_id,)).fetchone()
+                if predecessor is None or tuple(predecessor) != (source_revision_id, moment_id):
+                    raise ValueError("predecessor must be an existing extraction of the same source revision and moment")
+            row = self.conn.execute("""
+                SELECT source_revision_id, moment_id, revision_key, extractor, extractor_version,
+                       config_hash, output_hash, output_locator, predecessor_extraction_revision_id
+                FROM media_extraction_revisions WHERE extraction_revision_id = ?
+            """, (extraction_id,)).fetchone()
+            if row is None or tuple(row) != expected:
+                raise ValueError("revision_key already names different immutable extraction metadata")
+            result = ExtractionRevisionWrite(extraction_id, "created" if cursor.rowcount == 1 else "unchanged")
+            self.conn.execute("RELEASE SAVEPOINT media_extraction_write")
+            if owns_transaction:
+                self.conn.execute("COMMIT")
+            return result
+        except BaseException:
+            with suppress(sqlite3.Error):
+                self.conn.execute("ROLLBACK TO SAVEPOINT media_extraction_write")
+                self.conn.execute("RELEASE SAVEPOINT media_extraction_write")
+            if owns_transaction:
+                with suppress(sqlite3.Error):
+                    self.conn.execute("ROLLBACK")
+            raise
+
+    def get_extraction_revision(self, extraction_revision_id: str) -> Optional[Dict[str, Any]]:
+        """Read asserted extraction metadata without fetching its output."""
+        extraction_revision_id = _revision_text(extraction_revision_id, "extraction_revision_id", 256)
+        if not self._has_extraction_revision_schema():
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM media_extraction_revisions WHERE extraction_revision_id = ?", (extraction_revision_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_extraction_revisions(
+        self, source_revision_id: str, moment_id: str, *, limit: int = 100, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return a bounded history; never infer a latest or accepted extraction."""
+        source_revision_id = _revision_text(source_revision_id, "source_revision_id", 256)
+        moment_id = _revision_text(moment_id, "moment_id", 256)
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer in 1..1000")
+        if type(offset) is not int or not 0 <= offset <= 2**63 - 1:
+            raise ValueError("offset must be a nonnegative SQLite integer")
+        if not self._has_extraction_revision_schema():
+            return []
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM media_extraction_revisions WHERE source_revision_id = ? AND moment_id = ? "
+            "ORDER BY registered_at, extraction_revision_id LIMIT ? OFFSET ?",
+            (source_revision_id, moment_id, limit, offset),
+        ).fetchall()]
+
+    def _has_extraction_revision_schema(self) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_extraction_revisions'"
         ).fetchone() is not None
 
     # ------------------------------------------------------------------
