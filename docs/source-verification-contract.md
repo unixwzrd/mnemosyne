@@ -22,6 +22,8 @@ Only complete EOF observations expose a digest; a prefix, read failure, over-bud
 
 Verification describes one stream at one time. Source mutation, resolver replacement, a caller-owned stale SQLite snapshot and a later reopened stream can invalidate assumptions; verified bytes are not leased or returned for later consumption. No automatic retry, reindex, relocation update, derivative regeneration or policy change occurs. Reauthorizing and verifying the exact bytes consumed during future evidence expansion remains an explicit S2/P4 gate.
 
+The dependent [S2b journal](source-verification-journal-contract.md) adds a separately invoked, optional owner-report history. The S2a verifier remains read-only and never records automatically. A historical reported result does not replace authorization or checksum verification during later evidence expansion.
+
 ## Acceptance
 
 Use synthetic sources/disposable stores and existing resolver/media regressions. Test exact and empty bytes, repeated observations, changed bytes at one URI, moved copies with stable IDs, size mismatch, false HEAD metadata, missing/offline/inaccessible sources, unsupported representations/schemes, malformed streams, bounded reads, unknown-length overflow, stream close failures, read/open cancellation and read-only transaction ownership. Inspect database/sidecar state and resolver/provider tripwires for no storage, implicit access or model calls. Selected-suite, interpreter, installed-artifact and performance evidence must retain exact pins; no full protected/source lifecycle readiness follows from this helper.
