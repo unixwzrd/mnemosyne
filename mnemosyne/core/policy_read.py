@@ -218,7 +218,9 @@ class PolicyReader:
     def _release(self, context, grant, projects, destination):
         if grant.lifecycle_epoch is not None:
             current, fresh, _ = self._decision(destination, projects)
-            if current.fingerprint() != context.fingerprint() or replace(fresh, decision_id=grant.decision_id) != grant:
+            if (current.fingerprint() != context.fingerprint()
+                or get_access_context(required=True).fingerprint() != context.fingerprint()
+                or replace(fresh, decision_id=grant.decision_id) != grant):
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             return fresh
         return grant
