@@ -24,7 +24,9 @@ These are locally qualified topic branches, not independently released packages.
 | P2b | Confirmed project-membership selection; proposed memberships do not grant access | [Project selection](https://github.com/unixwzrd/mnemosyne/tree/contrib/p2b-project-selection-20261020) |
 | P2c | Explicit native FTS lexical recall, authorized before limits/content, without global corpus ranking | [Lexical recall](https://github.com/unixwzrd/mnemosyne/tree/contrib/p2c-authorized-lexical-20261020) |
 
-P2d, on this dependent branch, adds [bounded authorized float32 vector recall](policy-vector-contract.md). Its qualification and exact commit must be checked before treating it as an accepted checkpoint. It does not invoke an embedding provider, migrate a vector store or replace ordinary hybrid recall.
+P2d, on this dependent branch, adds [bounded authorized float32 vector recall](policy-vector-contract.md). Its locally qualified runtime checkpoint is `a6be9da15559c9466c5debb342b3099058802754`; this overview's follow-up changes are documentation only. It does not invoke an embedding provider, migrate a vector store or replace ordinary hybrid recall.
+
+At that runtime checkpoint, 580 selected regressions pass on Python 3.12 and all 64 new vector cases pass on each Python 3.10-3.14 without skips. Changed-file/fatal lint, generated-documentation checks and an offline exact-commit wheel smoke pass. The installed-target smoke excludes source checkouts and editable site hooks and uses existing NumPy/sqlite-vec dependencies; it is not minimal-install or live acceptance. Independent Cursor review found no actionable static issue; its runtime probes were blocked by its shell gate and are not counted as independent test results. A synthetic 1024-dimensional geometric workload returns the exact authorized neighbors without provider calls, but does not establish a real model's semantic quality or freshness. Full core/Hermes CI and protected activation remain unqualified.
 
 ## Remaining Delivery Stages
 
