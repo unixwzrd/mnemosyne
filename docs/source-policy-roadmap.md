@@ -68,12 +68,20 @@ The qualified runtime is `5ddea748fdf0889ac7fb7170c7ed4717cbbdb02e`, depending o
 
 Exact-runtime core/adapter wheels pass PyYAML-only installed-target controls without source checkouts, including 157 RECORD hashes, earlier SP1/SP2 checks and new malformed-reference refusals. Core wheel SHA-256 `95260da435be3e4d5e1630d1e98f9c8972348f03cdd895de6adaf45f40b957c9`; adapter `0fb59da2149bd10f54844cd59abf90e1dca91aa91c97e873b2de593cb4c434f1`. They remain unreleased development artifacts. A synthetic 1 MiB admission observation is p50 39.789 ms / p95 41.241 ms, not a paired performance, semantic-quality or budget acceptance result. All pre-existing runtime implementations remain byte-identical to SP2. The contribution ledger retains initial artifacts, raw samples, skips, review limitations and publication state.
 
+## S3b Durable Owner-Mode Excerpts
+
+[The durable catalogue contract](source-index-store-contract.md) adds atomic persistent excerpt plans and group-wide logical byte/count limits across registered aliases, byte revisions and retries. An exact retry has no extra charge; new revisions cannot raise the retained-text ceiling. Registration creates fresh native reference-only document assets and refuses adoption of pre-existing ones. Known legacy text, corrupt records, unsupported schema and non-UTF-8 databases refuse explicitly. Original documents and complete extractions remain external; no working-memory, FTS, embedding, provider or automatic adapter path is added.
+
+Qualified source `c6ad7f09753be6e816038a66955c5aaa25a15257` has 83 new store cases plus 110 admission cases, the declared Python 3.10-3.14 matrix, 1,410 selected regressions, 759 adapter cases and an exact-artifact installed-target check. Explicit skips and two independent findings/corrections remain recorded in the contract and contribution ledger. Final independent recheck passes 69 controls without remaining findings in its scoped owner-mode boundary. Development artifacts are not deployed or upstream accepted.
+
+Logical catalogue accounting does not constrain arbitrary legacy writers, dishonest host alias assertions, physical SQLite journal copies or a database-owning process. Policy inheritance, revocation, protected adapters and usable index generations still need their own acceptance. This is progress on S3, not permission to activate protected indexing or a claim that B1 is complete across every enabled surface.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
 | --- | --- |
 | S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
-| S3 | S3a defines and validates complete-plan excerpt limits; durable cross-revision/alias accounting, writer integration and B1 sidecar proof remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
+| S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
 | S4 | Resumable indexing, usable prior generations, idempotency, coverage and embedding reuse |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |
 | P3 | Derivative inheritance, revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit |
