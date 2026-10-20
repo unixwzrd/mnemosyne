@@ -9481,6 +9481,16 @@ class BeamMemory:
 
         return build_evidence_pack(primary_rows, candidate_rows, max_items=pack_k)
 
+    def recall_authorized_lexical(self, query: str, *, reader, destination: str,
+                                  projects=None, top_k: int = 20, candidate_limit: int = 200):
+        """Explicit policy-scoped FTS/lexical path; ordinary recall is unchanged."""
+        from mnemosyne.core.policy_lexical import recall_authorized_lexical
+
+        return recall_authorized_lexical(
+            self, query, reader=reader, destination=destination, projects=projects,
+            top_k=top_k, candidate_limit=candidate_limit,
+        )
+
     def recall(self, query: str, top_k: int = 40, *,
                from_date: Optional[str] = None, to_date: Optional[str] = None,
                source: Optional[str] = None, topic: Optional[str] = None,

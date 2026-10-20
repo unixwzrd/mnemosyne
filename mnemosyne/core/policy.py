@@ -24,6 +24,7 @@ class RefusalReason(str, Enum):
     UNSUPPORTED_SURFACE = "unsupported_surface"
     ACCESS_DENIED = "access_denied"
     CONTEXT_UNAVAILABLE = "context_unavailable"
+    RESOURCE_LIMIT = "resource_limit"
 
 
 class PolicyRefusal(PermissionError):
