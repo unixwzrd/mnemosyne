@@ -227,29 +227,37 @@ class PolicyReader:
         if "read:source-revision" not in context.operations:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         context, grant, _ = self._decision(destination)
+        try:
+            return self._source_metadata(identity, context, grant)
+        except sqlite3.DataError:
+            raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE) from None
+
+    def _source_metadata(self, identity, context, grant):
+        from mnemosyne.core.media import _revision_text
+
         with self._store._transaction():
             sql, params = self._selection(RecordKind.SOURCE_REVISION, context, grant, identity)
             if not _source_revision_schema(self._store.conn):
                 return None
-            # Bound native field allocation even for owner-corrupted metadata.
+            # Bound Python result allocation, not SQLite's internal page reads.
             fields = []
             for column, maximum in (("asset_id", 512), ("content_hash", 64),
                                     ("representation", 128), ("digest_status", 64)):
-                fields.append(f"CASE WHEN typeof(r.{column})='text' AND instr(r.{column},char(0))=0 "
-                              f"AND length(CAST(r.{column} AS BLOB)) BETWEEN 1 AND {maximum * 4} "
-                              f"THEN substr(r.{column},1,{maximum + 1}) ELSE NULL END")
+                fields.append(f"CASE WHEN typeof(r.{column})='text' AND length(r.{column}) BETWEEN 1 AND {maximum} "
+                              f"AND instr(r.{column},char(0))=0 THEN r.{column} ELSE NULL END")
             sql += f""" SELECT e.binding_id,e.policy_id,e.policy_version,e.classification,
                     {','.join(fields)},CASE WHEN typeof(r.byte_size) IN ('null','integer') THEN r.byte_size ELSE -1 END
-                FROM eligible AS e JOIN main.media_source_revisions AS r ON r.revision_id COLLATE BINARY=e.record_id COLLATE BINARY
-                WHERE EXISTS (SELECT 1 FROM main.media_assets AS a WHERE a.asset_id COLLATE BINARY=r.asset_id COLLATE BINARY)
+                FROM eligible AS e CROSS JOIN main.media_source_revisions AS r
+                WHERE r.revision_id COLLATE BINARY=e.record_id COLLATE BINARY
+                AND EXISTS (SELECT 1 FROM main.media_assets AS a WHERE a.asset_id COLLATE BINARY=r.asset_id COLLATE BINARY)
                 LIMIT 1"""
             row = self._store.conn.execute(sql, params).fetchone()
         if row is None:
             return None
         try:
-            asset = _text(row[4], "asset_id", 512)
+            asset = _revision_text(row[4], "asset_id", 512)
             digest = row[5]
-            representation = _text(row[6], "representation", 128)
+            representation = _revision_text(row[6], "representation", 128)
             if (not isinstance(digest, str) or len(digest) != 64
                 or any(c not in "0123456789abcdef" for c in digest) or row[7] != "asserted"
                 or (row[8] is not None and (type(row[8]) is not int or not 0 <= row[8] <= 2**63 - 1))):

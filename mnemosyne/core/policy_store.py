@@ -104,9 +104,11 @@ def _identity(kind: RecordKind, record_id) -> str:
 
 def _source_revision_schema(conn) -> bool:
     """Require the known physical source table; never create or upgrade it."""
-    row = conn.execute("SELECT type FROM main.sqlite_master WHERE name='media_source_revisions'").fetchone()
+    row = conn.execute("SELECT type FROM main.sqlite_master WHERE name='media_source_revisions' AND type IN ('table','view')").fetchone()
     if row is None:
         return False
+    if row[0] != "table":
+        raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
     expected = (
         ("revision_id", "TEXT", 0, 1), ("asset_id", "TEXT", 1, 0),
         ("revision_key", "TEXT", 1, 0), ("content_hash", "TEXT", 1, 0),
@@ -116,8 +118,24 @@ def _source_revision_schema(conn) -> bool:
     )
     columns = conn.execute("PRAGMA main.table_xinfo('media_source_revisions')").fetchall()
     actual = tuple((r[1], r[2].upper(), r[3], r[5]) for r in columns)
-    if row[0] != "table" or actual != expected or any(r[6] != 0 for r in columns):
+    if actual != expected or any(r[6] != 0 for r in columns):
         raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+    parent = conn.execute("SELECT type FROM main.sqlite_master WHERE name='media_assets' AND type IN ('table','view')").fetchone()
+    if parent is None or parent[0] != "table":
+        raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+    asset_columns = conn.execute("PRAGMA main.table_xinfo('media_assets')").fetchall()
+    asset_key = next((r for r in asset_columns if r[1] == "asset_id"), None)
+    if asset_key is None or (asset_key[2].upper(), asset_key[5], asset_key[6]) != ("TEXT", 1, 0):
+        raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
+    for table, key in (("media_source_revisions", "revision_id"), ("media_assets", "asset_id")):
+        valid = False
+        for index in conn.execute(f"PRAGMA main.index_list('{table}')"):
+            if index[2] and index[3] == "pk" and not index[4]:
+                columns = conn.execute("SELECT name,coll FROM main.pragma_index_xinfo(?, 'main') WHERE key=1 ORDER BY seqno", (index[1],)).fetchall()
+                if [tuple(r) for r in columns] == [(key, "BINARY")]:
+                    valid = True
+        if not valid:
+            raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
     return True
 
 

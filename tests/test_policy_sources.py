@@ -274,6 +274,7 @@ def test_temp_shadow_cannot_replace_main_source(fixture):
 
 @pytest.mark.parametrize("replacement", [
     "CREATE VIEW media_source_revisions AS SELECT 'x' AS revision_id",
+    "CREATE VIEW media_source_revisions AS SELECT * FROM missing_native_source",
     "CREATE TABLE media_source_revisions(revision_id TEXT PRIMARY KEY)",
 ])
 def test_unknown_source_schema_is_not_read_or_migrated(fixture, replacement):
@@ -353,8 +354,9 @@ def test_case_insensitive_native_key_does_not_substitute_another_revision(fixtur
     values[0] = identity.upper()
     conn.execute("INSERT INTO main.media_source_revisions VALUES(?,?,?,?,?,?,?,?,?,?)", values)
     conn.commit()
-    assert read(fixture, identity) is None
-    with pytest.raises(ValueError, match="parent"):
+    with pytest.raises(PolicyStoreError):
+        read(fixture, identity)
+    with pytest.raises(PolicyStoreError):
         fixture[1].bind(RecordKind.SOURCE_REVISION, identity, restriction())
 
 
@@ -370,12 +372,66 @@ def test_invalid_revision_identity_refuses_without_sql(fixture, value):
 def test_sql_plan_materializes_eligibility_before_indexed_revision_lookup(fixture):
     identity = source(fixture)
     store, reader = fixture[1], fixture[3]
+    statements = []
+    store.conn.set_trace_callback(statements.append)
     with bind_access_context(context()):
-        ctx, grant, _ = reader._decision("channel:a")
-        sql, params = reader._selection(RecordKind.SOURCE_REVISION, ctx, grant, identity)
-        plan = store.conn.execute("EXPLAIN QUERY PLAN " + sql + " SELECT r.content_hash FROM eligible AS e "
-                                  "JOIN main.media_source_revisions AS r ON r.revision_id=e.record_id", params).fetchall()
+        assert reader.get_source_revision(identity, destination="channel:a")
+    store.conn.set_trace_callback(None)
+    sql = next(s for s in statements if s.startswith("WITH eligible"))
+    plan = store.conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
     detail = "\n".join(row[3] for row in plan)
     assert "MATERIALIZE eligible" in detail
     assert any(name in detail for name in ("idx_policy_binding_classification", "idx_policy_binding_owner"))
     assert "sqlite_autoindex_media_source_revisions" in detail
+    assert detail.index("SCAN e") < detail.index("SEARCH r")
+
+
+@pytest.mark.parametrize("representation", [" original-bytes ", "original\u0085bytes"])
+def test_valid_native_representation_is_preserved_without_policy_normalization(fixture, representation):
+    media, store, _, _ = fixture
+    asset = media.upsert_asset(ref_kind="url", ref_value="https://example.invalid/native", modality="document")
+    revision = media.register_source_revision(asset.asset_id, revision_key="native", content_hash="a" * 64,
+                                             representation=representation)
+    store.bind(RecordKind.SOURCE_REVISION, revision.revision_id, restriction())
+    assert read(fixture, revision.revision_id).representation == representation
+
+
+@pytest.mark.parametrize("denied", [False, True])
+def test_oversized_field_limit_is_content_free_and_preserves_denial(fixture, denied):
+    identity = source(fixture, classification="restricted" if denied else "internal")
+    conn = fixture[1].conn
+    conn.execute("UPDATE main.media_source_revisions SET representation=? WHERE revision_id=?", ("x" * 262144, identity))
+    conn.commit()
+    if not hasattr(conn, "setlimit"):
+        if denied:
+            assert read(fixture, identity) is None
+        else:
+            with pytest.raises(PolicyStoreError):
+                read(fixture, identity)
+        return
+    prior = conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 16384)
+    try:
+        if denied:
+            assert read(fixture, identity) is None
+        else:
+            with pytest.raises(PolicyStoreError) as error:
+                read(fixture, identity)
+            assert str(error.value) == "policy_store:incompatible"
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, prior)
+    assert not conn.in_transaction
+
+
+@pytest.mark.parametrize("view", [False, True])
+def test_missing_or_view_asset_parent_refuses_before_native_evaluation(fixture, view):
+    identity = source(fixture, classification="restricted")
+    conn = fixture[1].conn
+    observed = []
+    conn.create_function("asset_canary", 1, lambda value: observed.append(value) or value)
+    conn.execute("ALTER TABLE main.media_assets RENAME TO fixture_assets")
+    if view:
+        conn.execute("CREATE VIEW media_assets AS SELECT asset_canary(asset_id) AS asset_id FROM fixture_assets")
+    conn.commit()
+    with pytest.raises(PolicyStoreError) as error:
+        read(fixture, identity)
+    assert str(error.value) == "policy_store:incompatible" and observed == []
