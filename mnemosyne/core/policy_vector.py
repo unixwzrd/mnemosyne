@@ -1,4 +1,4 @@
-"""Bounded authorized float32 recall; no global KNN, provider or activation."""
+"""Bounded authorized native vector recall; no global KNN or activation."""
 
 from __future__ import annotations
 
@@ -36,23 +36,26 @@ class AuthorizedVectorRecall:
     decision_id: str
 
 
-def _require_float32(conn, table, dimension):
+def _require_vector_type(conn, table, dimension):
     row = conn.execute("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-    if row is None or not row[0] or not re.search(
-        rf"\bUSING\s+vec0\s*\(\s*embedding\s+float32\s*\[\s*{dimension}\s*\]\s*\)\s*$", row[0], re.I
-    ):
+    match = re.search(
+        rf"\bUSING\s+vec0\s*\(\s*embedding\s+(float32|int8)\s*\[\s*{dimension}\s*\]\s*\)\s*$",
+        row[0], re.I,
+    ) if row is not None and row[0] else None
+    if match is None:
         raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
     # Exercise the actual extension, not only a DDL string or a default type.
     conn.execute(f"SELECT rowid,embedding FROM main.{table} LIMIT 0")
     if not conn.execute("SELECT vec_version()").fetchone()[0]:
         raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+    return match[1].lower()
 
 
 def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, destination,
                              projects=None, top_k=20, scan_limit=1000):
     from mnemosyne.core.beam import (
         EMBEDDING_DIM, BeamMemory, _cap_recall_content, _embeddings,
-        _episodic_recall_where, _vec_float32_blob_cosine,
+        _episodic_recall_where, _vec_float32_blob_cosine, _vec_int8_blob_cosine,
     )
 
     if not isinstance(beam, BeamMemory) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
@@ -81,9 +84,17 @@ def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, 
         raise ValueError("query_embedding must remain nonzero in float32")
     now = datetime.now(timezone.utc).isoformat()
     ranked, eligible_count, scored_count = [], 0, 0
+    query_int8 = None
     with reader._store._transaction():
         for kind, table in ((RecordKind.WORKING, "vec_working"), (RecordKind.EPISODIC, "vec_episodes")):
-            _require_float32(beam.conn, table, EMBEDDING_DIM)
+            vector_type = _require_vector_type(beam.conn, table, EMBEDDING_DIM)
+            if vector_type == "int8" and query_int8 is None:
+                # The SQL quantizer expects unit input; its 'unit' argument is
+                # a range declaration, not normalization (sqlite-vec 0.1.9).
+                unit = (query / np.linalg.norm(query)).astype(np.float32)
+                query_int8 = beam.conn.execute("SELECT vec_quantize_int8(?, 'unit')", (unit.tobytes(),)).fetchone()[0]
+                if type(query_int8) is not bytes or len(query_int8) != EMBEDDING_DIM or not np.any(np.frombuffer(query_int8, dtype=np.int8)):
+                    raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             sql, params = reader._selection(kind, context, grant, projects=selection)
             native_where, native_params = _episodic_recall_where(session_id=beam.session_id, now_iso=now, cross_session=False)
             sql += f""", native_eligible AS MATERIALIZED (
@@ -102,14 +113,15 @@ def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, 
             vectors = beam.conn.execute(sql + f""" SELECT ne.native_id,ne.binding_id,ne.policy_id,ne.policy_version,ne.classification,
                 CASE WHEN typeof(v.embedding)='blob' AND length(v.embedding)=? THEN v.embedding ELSE NULL END
                 FROM native_eligible AS ne CROSS JOIN main.{table} AS v ON v.rowid=ne.native_rowid
-                ORDER BY ne.native_id""", (*params, 4 * EMBEDDING_DIM)).fetchall()
+                ORDER BY ne.native_id""", (*params, (4 if vector_type == "float32" else 1) * EMBEDDING_DIM)).fetchall()
             for row in vectors:
                 if row[5] is None:
                     raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
-                values = np.frombuffer(row[5], dtype=np.float32)
+                values = np.frombuffer(row[5], dtype=np.float32 if vector_type == "float32" else np.int8)
                 if not np.isfinite(values).all() or not np.any(values):
                     raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
-                score = _vec_float32_blob_cosine(query, row[5])
+                score = (_vec_float32_blob_cosine(query, row[5]) if vector_type == "float32"
+                         else _vec_int8_blob_cosine(query_int8, row[5]))
                 scored_count += 1
                 if score > 0:
                     ranked.append((score, kind, tuple(row[:5]), sql, params))
