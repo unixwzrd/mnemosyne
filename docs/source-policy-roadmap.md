@@ -76,13 +76,19 @@ Qualified source `c6ad7f09753be6e816038a66955c5aaa25a15257` has 83 new store cas
 
 Logical catalogue accounting does not constrain arbitrary legacy writers, dishonest host alias assertions, physical SQLite journal copies or a database-owning process. Policy inheritance, revocation, protected adapters and usable index generations still need their own acceptance. This is progress on S3, not permission to activate protected indexing or a claim that B1 is complete across every enabled surface.
 
+## S4a Resumable Owner-Mode Generations
+
+[The generation contract](source-index-generations-contract.md) adds immutable bounded manifests, durable planned/completed/failed/excluded checkpoints and an atomic current-generation pointer over the existing S3b catalogue. Interrupted updates leave the previous committed pointer usable. Exact retry resumes the same manifest without duplicating excerpts; stale competing publishers refuse. Previous generations remain readable and new membership never resets lifetime source retention. Caller-owned plan/checkpoint/publication batches remain pending until their owner commits. There are no embedding/provider calls, automatic ingestion or protected-mode changes.
+
+Qualified source `7bfeedfcd3aa0c4c752865787de94af71304a0e7` is on [the S4a topic](https://github.com/unixwzrd/mnemosyne/tree/contrib/s4a-index-generations-20261020), based on S3b `03bbfb6`. It adds 66 generation cases, 1,476 selected regressions with two unavailable loader skips, Python 3.10-3.14 checks and exact-artifact installed controls. Independent probes found malformed-UTF-8 error payloads and a temp-only schema refusal gap; both are corrected and all 46 unchanged independent probes pass. The contract and downstream ledger distinguish original reproductions, corrections and rechecks. This completes a generation/checkpoint contribution only, not S4 or protected source indexing. Compatible embedding reuse must bind exact text, model, dimensions, preprocessing and an allowed sharing domain; it is the next source increment, not supplied by an ordinary query cache.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
 | --- | --- |
 | S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
 | S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
-| S4 | Resumable indexing, usable prior generations, idempotency, coverage and embedding reuse |
+| S4 | S4a supplies owner-mode resumable generations, prior-pointer recovery, bounded coverage and selection replacement. Compatible embedding reuse, automatic indexing/adapter integration, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |
 | P3 | Derivative inheritance, revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit |
 | P4 | The same trusted contract through SDK, CLI, MCP, Hermes and resolvers; protected activation only after supported surfaces pass |
