@@ -95,7 +95,7 @@ S4c adds [model-bound owner import jobs](source-index-jobs-contract.md) over the
 | S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
 | S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
 | S4 | S4a/S4b/S4c supply owner-mode checkpoints, atomic selection, exact durable embedding reuse and model-bound orchestration. Actual importer/provider/adapter qualification, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
-| P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |
+| P2 remainder | P2f qualifies explicit authorized lexical/float32 hybrid fusion; native int8 and other required formats, graph/canonical/ordinary entry points, remaining guarded writes and unsupported-path refusals remain open |
 | P3 | Derivative inheritance, revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit |
 | P4 | The same trusted contract through SDK, CLI, MCP, Hermes and resolvers; protected activation only after supported surfaces pass |
 | R1 | Compact token-budgeted evidence recall and authorized expansion, measuring fidelity as well as token savings |
@@ -103,6 +103,8 @@ S4c adds [model-bound owner import jobs](source-index-jobs-contract.md) over the
 Performance changes are separate, profile-backed contributions, not speculative refactors bundled with schema or security work. Every runtime increment is compared with its preceding checkpoint using synthetic sources and disposable stores. Measures include correctness/authorized recall quality, latency, throughput, memory/index growth, embedding calls and injected tokens where the increment supports them. Small offline lexical timings do not establish semantic recall quality or an overall protected-mode overhead budget.
 
 ## Compatibility And Review
+
+P2f's [explicit authorized hybrid checkpoint](policy-hybrid-contract.md#qualified-checkpoint), qualified runtime `3fd7f350820867f4424626175ea09e5f66b62b74`, combines only authorized branch hits under fresh host verification before each consumer and release. Its 50 new cases, Python 3.10-3.14 matrix, 1,636 selected regressions plus two known skips, 197 independent probes and exact installed wheels qualify this additive API, not ordinary BEAM or protected activation. Unsupported vector formats refuse without lexical fallback. Installed testing confirmed that native tables default to int8; format support is the next compatibility contribution, not a reason to silently change runtime defaults. See the contract and downstream ledger for measured costs, harness corrections and remaining gates.
 
 Legacy reads/writes are unchanged by default. Prepared metadata and explicit prototype APIs do not protect old entry points against bypass. The application/process owning the SQLite connection remains trusted; this is not a sandbox against arbitrary in-process SQL. Existing callers keep their transactions and snapshots, so request-start verification is not a promise of linearizable revocation.
 
