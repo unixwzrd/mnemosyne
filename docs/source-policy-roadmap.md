@@ -12,13 +12,15 @@ The immediate use cases are assistants with separate general/private contexts, s
 
 ## Implemented Checkpoints
 
-These are locally qualified topic branches, not independently released packages. Source and policy branches have separate bases; installing one does not implicitly combine the other. The contribution ledger records exact commits and artifacts. Topic pushes do not run the repository's main/PR CI workflow.
+These are locally qualified topic branches, not independently released packages. Source and policy branches have separate bases; installing one does not implicitly combine the other. SP1 explicitly combines source `d960a2e` and policy `eca181d` at merge checkpoint `36560f1`; it is not a merge into maintained or fork main. The contribution ledger records exact commits and artifacts. Topic pushes do not run the repository's main/PR CI workflow.
 
 | Increment | Available behavior | Branch |
 | --- | --- | --- |
 | Q1 | Synthetic Hermes isolation fixtures and reproducible bounded legacy benchmark | [Q1 qualification](https://github.com/unixwzrd/mnemosyne/tree/contrib/q1-qualification-20261018) |
 | S1a | Immutable asserted byte-revision metadata and external locators | [Source revisions](https://github.com/unixwzrd/mnemosyne/tree/contrib/s1-source-revisions-20261019) |
 | S1b | Extraction revisions and correction lineage without rewriting legacy moments | [Extraction lineage](https://github.com/unixwzrd/mnemosyne/tree/contrib/s1b-extraction-lineage-20261019) |
+| S2a | Explicit bounded source-byte verification, not an expansion grant | [Source verification](https://github.com/unixwzrd/mnemosyne/tree/contrib/s2a-source-verification-20261020) |
+| S2b | Immutable owner-reported verification history and committed/pending receipts | [Verification journal](https://github.com/unixwzrd/mnemosyne/tree/contrib/s2b-verification-journal-20261020) |
 | P1a/P1b | Optional policy/context contracts and explicitly prepared indexed metadata catalog | [Indexed policy](https://github.com/unixwzrd/mnemosyne/tree/contrib/p1b-indexed-policy-20261019) |
 | P2a | Explicit trusted-context direct reads and authorized candidate IDs | [Authorized reads](https://github.com/unixwzrd/mnemosyne/tree/contrib/p2a-authorized-reads-20261020) |
 | P2b | Confirmed project-membership selection; proposed memberships do not grant access | [Project selection](https://github.com/unixwzrd/mnemosyne/tree/contrib/p2b-project-selection-20261020) |
@@ -34,11 +36,23 @@ P2e's initial checkpoint `b94d5b7894e80f4390785da9df1adb3c056cc0d7` passed 647 s
 
 The final qualified runtime is `1115109be2fe5eb4317465131677db2ee82ca563`. Its shared schema check also uses ASCII matching so Unicode case folding cannot alias a different external-content table or rowid. Independent recheck passed 16 targeted tests and seven disposable probes, resolving both findings with no remaining actionable issue in scope. At this exact runtime, 660 selected regressions pass; all 80 new creation cases pass on Python 3.12-3.14, and Python 3.10/3.11 pass 78 with two explicit sqlite3 autocommit-API skips. The exact wheel passes minimal PyYAML-only installed-target creation, authorized lexical recall, pending rollback and both FTS correction regressions without source paths. Lint and generated-documentation checks pass. Earlier artifacts/results remain separate and superseded, not silently relabeled as the final candidate. Changes after this runtime checkpoint are qualification documentation only.
 
+## Source And Policy Integration
+
+SP1 adds [immutable source-revision policy associations and authorized metadata reads](source-policy-contract.md). Source metadata needs its own policy binding; citing a source from a memory or authorizing an earlier revision grants nothing to the current source. Both `read:bank` and `read:source-revision` are required, and an eligibility-first indexed query precedes native source metadata. The result omits original bytes, locators and unapproved ancestry. Protected project-selected source access and generic source enumeration refuse rather than silently fall back. This is the prerequisite metadata boundary, not completion of authorized exact-byte expansion.
+
+The corrected SP1 runtime is `3cd219e8ef961ce7d20f48951b9020764122c772`; the initial `806896d` artifact is superseded. Independent review identified join-order/schema, oversized-field error, native text-contract and parent-schema defects, which have dedicated regression controls. Source/asset layouts now require native physical tables with binary keys, an eligibility-first CROSS JOIN enforces the documented SQLite loop order, native-valid representation text remains unchanged and corrupt-metadata errors are content-free. Qualification results and the final independent recheck are recorded in the downstream ledger, not inferred from the existence of these fixes.
+
+At the corrected runtime, 1,148 selected source/policy/media/Hermes-provider regressions pass with two explicit uninstalled-Hermes-loader skips. All 62 new source-policy cases pass on each Python 3.10-3.14. The adapter suite passes 759 with one pinned-host-contract skip after matching its unchanged source to isolated `0.7.6` distribution metadata. Independent recheck closes all four findings with 16 probes plus selected regressions; Cursor's earlier final-review attempt stalled and receives no review credit. The first adapter run reproduced a stale test-environment metadata mismatch on unchanged source, and an installed-path test harness then required source-layout-aware invocation; neither was fixed by changing adapter code.
+
+Exact-commit unreleased core wheel SHA-256: `543278f4e1ecaf0eb71a65a7932f4d17867bbbbe2c39a97dc10ca4cbed0574c7`. Unchanged-source adapter wheel SHA-256: `6642749cf0d646103d19ad7e0c740c8c1e7317e2f47620b557557dbb40433fac`. A `-I -S`, PyYAML-only installed-target smoke verifies 155 RECORD entries, actual imported module identities, positive/denied metadata, no read writes, caller rollback and legacy verifier/journal compatibility, detecting no provider/socket attempts. These development identities (`4.0.0b5`/`0.7.6`) are not new published versions or live installations. Changed/fatal lint and generated-documentation checks pass. The earlier artifact and initial failures remain separately retained and superseded. No full-system protected, semantic-quality, timing-confidentiality or overhead-budget acceptance is implied; the earlier write-tail question remains open.
+
+The chosen absent-classification default is `unclassified` only where trusted inheritance does not supply a stricter classification. This is not public access: complete owner/audience/purpose and other restrictions still apply. SP1 supports explicitly bound unclassified records but does not yet implement ingestion normalization or migrate existing rows. Invalid explicit values are not defaulted. Legacy behavior remains unchanged.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
 | --- | --- |
-| S2 | Expected-revision resolver verification, relocation, offline/changed-source states and reference-only media |
+| S2 remainder | Authorized exact-byte expansion on the integrated source/policy boundary and full resolver relocation/offline lifecycle; S2a/S2b verification and history alone do not authorize a later reopen |
 | S3 | Reviewed excerpt/aggregate retention budgets and full-source search contract; no hidden full-document storage |
 | S4 | Resumable indexing, usable prior generations, idempotency, coverage and embedding reuse |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |

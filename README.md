@@ -244,6 +244,8 @@ The opt-in `mnemosyne.core.source_verification.verify_source_revision` helper ca
 
 The separate opt-in `SourceVerificationJournal` can retain those owner-reported observations with immutable event keys and explicit pending/committed write receipts. Construction and missing-history reads do not migrate a store. A journal entry is historical metadata, not source freshness, authenticated attestation or permission to expand evidence. See the [S2b journal contract](docs/source-verification-journal-contract.md).
 
+This combined downstream topic also supports explicit source-revision policy bindings and `PolicyReader.get_source_revision` for metadata-only reads. It requires a fresh trusted host grant plus both memory-bank and source-revision read permissions, and applies indexed eligibility before native source metadata. It returns no original bytes or locator and does not authorize expansion or enable protected mode. See the [SP1 source-policy contract](docs/source-policy-contract.md).
+
 ## Architecture
 
 ```
