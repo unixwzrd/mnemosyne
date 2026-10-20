@@ -549,3 +549,30 @@ def test_cleanup_refusal_remains_explicit_and_owner_can_recover(store):
     store.conn.execute("RELEASE caller")
     assert journal.list(value.revision_id) == before
     assert record(journal, value).status == "created"
+
+
+@pytest.mark.parametrize("caller_owned", [False, True])
+def test_temp_trigger_on_main_journal_refuses_before_pruning_prior_events(store, caller_owned):
+    value = observation(store)
+    journal = SourceVerificationJournal(store)
+    record(journal, value, event_key="prior")
+    before = list(store.conn.iterdump())
+    store.conn.execute("""CREATE TEMP TRIGGER prune_prior
+        AFTER INSERT ON main.media_source_verification_events
+        BEGIN DELETE FROM media_source_verification_events WHERE event_key='prior'; END""")
+    if caller_owned:
+        store.conn.execute("SAVEPOINT caller")
+    changes = store.conn.total_changes
+    with pytest.raises(VerificationJournalError, match="incompatible_schema"):
+        record(journal, value, event_key="new")
+    with pytest.raises(VerificationJournalError, match="incompatible_schema"):
+        journal.get(value.revision_id, event_key="prior")
+    assert store.conn.in_transaction == caller_owned
+    assert store.conn.total_changes == changes
+    assert list(store.conn.iterdump()) == before
+    assert store.conn.execute("SELECT name FROM temp.sqlite_master WHERE type='trigger'").fetchone()[0] == "prune_prior"
+    if caller_owned:
+        store.conn.execute("RELEASE caller")
+    store.conn.execute("DROP TRIGGER temp.prune_prior")
+    assert [row.event_key for row in journal.list(value.revision_id)] == ["prior"]
+    assert record(journal, value, event_key="new").status == "created"

@@ -214,6 +214,9 @@ class SourceVerificationJournal:
             or self.conn.execute(
                 "SELECT 1 FROM main.sqlite_master WHERE type = 'trigger' AND tbl_name = ? LIMIT 1", (_TABLE,),
             ).fetchone() is not None
+            or self.conn.execute(
+                "SELECT 1 FROM temp.sqlite_master WHERE type = 'trigger' AND tbl_name = ? LIMIT 1", (_TABLE,),
+            ).fetchone() is not None
         ):
             raise VerificationJournalError("incompatible_schema")
         return True
