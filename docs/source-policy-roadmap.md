@@ -58,12 +58,22 @@ At the corrected checkpoint, all 69 new cases pass on Python 3.11-3.14; Python 3
 
 All pre-existing runtime/adapter implementations remain byte-identical to SP1. This is not a paired performance result or a protected-readiness declaration. Cooperative checkpoint cancellation does not interrupt a blocked resolver or guarantee linearizable revocation after final authorization, and previously returned bytes cannot be retracted. Real resolver/adapter qualification, S3/S4 indexing budgets/recovery, P2/P3/P4 enforcement and R1 model-injection gates remain outstanding.
 
+## S3a Bounded Admission Boundary
+
+[The indexing contract](source-indexing-contract.md) now fixes conservative candidate limits before introducing a persistent writer. The explicit `plan_source_index` helper validates exact Unicode spans against an extraction digest, external output reference, per-excerpt and complete-plan UTF-8 budgets, a count cap and a fixed 25% retained-text ceiling. It rejects oversized selections and unsupported full-source search rather than truncating or silently claiming coverage. Defaults are 1 KiB per excerpt, 8 KiB and 32 excerpts per plan; explicit hard maxima are 4 KiB / 32 KiB / 128. The transient extraction cap is 8 MiB. These are downstream candidate defaults, not upstream-approved or measured recall-quality optima.
+
+Admission performs no source fetch, provider call, embedding, persistence or legacy-path change. The result is not authorization or an aggregate lifetime-retention receipt. S3 remains partial: a durable writer must account for aliases, revisions, retries, duplicated moment/working-memory/FTS text and sidecars before B1 can pass. Ordinary media ingestion remains unbounded and must not be presented as protected indexing. No activation, migration or live deployment is enabled.
+
+The qualified runtime is `5ddea748fdf0889ac7fb7170c7ed4717cbbdb02e`, depending on SP2 `376ca30`. All 110 new cases pass on Python 3.10-3.14; the selected combined suite passes 1,327 with two unavailable Hermes-loader skips, and the unchanged adapter suite passes 759 with one pinned-host skip. Initial runtime `076050b` accepted malformed URI components; independent review found that defect, and the correction now passes 97 independent URI assertions plus 54 selected pytest cases with no remaining actionable finding in the recheck. The original review's 46 budget/digest/offset probe groups and 22 selected cases remain separately recorded, not claimed as a new full-suite run.
+
+Exact-runtime core/adapter wheels pass PyYAML-only installed-target controls without source checkouts, including 157 RECORD hashes, earlier SP1/SP2 checks and new malformed-reference refusals. Core wheel SHA-256 `95260da435be3e4d5e1630d1e98f9c8972348f03cdd895de6adaf45f40b957c9`; adapter `0fb59da2149bd10f54844cd59abf90e1dca91aa91c97e873b2de593cb4c434f1`. They remain unreleased development artifacts. A synthetic 1 MiB admission observation is p50 39.789 ms / p95 41.241 ms, not a paired performance, semantic-quality or budget acceptance result. All pre-existing runtime implementations remain byte-identical to SP2. The contribution ledger retains initial artifacts, raw samples, skips, review limitations and publication state.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
 | --- | --- |
 | S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
-| S3 | Reviewed excerpt/aggregate retention budgets and full-source search contract; no hidden full-document storage |
+| S3 | S3a defines and validates complete-plan excerpt limits; durable cross-revision/alias accounting, writer integration and B1 sidecar proof remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
 | S4 | Resumable indexing, usable prior generations, idempotency, coverage and embedding reuse |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |
 | P3 | Derivative inheritance, revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit |
