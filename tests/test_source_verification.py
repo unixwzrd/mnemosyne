@@ -26,7 +26,8 @@ def no_network(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("unexpected socket or DNS use")
 
-    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
     monkeypatch.setattr(socket, "getaddrinfo", refuse)
 
 
