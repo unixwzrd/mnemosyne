@@ -84,11 +84,15 @@ Qualified source `7bfeedfcd3aa0c4c752865787de94af71304a0e7` is on [the S4a topic
 
 ## Remaining Delivery Stages
 
+S3c's [bounded catalogue decoding follow-up](source-index-store-contract.md#follow-up-explicit-bounded-utf-8-decoding) is a separate source-integrity contribution, not embedding feature code. At `df6813193844e57a03a8e79d8c3c91c38b671521`, malformed catalogue TEXT becomes a content-free refusal instead of a payload-bearing sqlite3 decoder error. Schemas, valid text, budgets, fingerprints and real storage/locking failures retain their contracts. Standalone selected regressions pass 1,492 plus two known skips; the dependent S4b matrix also qualifies those exact source bytes.
+
+S4b adds [durable exact excerpt embedding reuse](source-embedding-reuse-contract.md), based on S3c and S4a. Qualified source `a952cc70b6a738708423619b5e60ef011c709593` has 61 new embedding cases, 1,553 selected regressions plus two known loader skips, Python 3.10-3.14 and exact installed-artifact controls. All 37 unchanged independent probes pass after the separate source fix. A source-group-scoped key includes exact excerpt bytes, host sharing domain, model/artifact identity, dimensions and preprocessing hash. Reused vectors receive durable lineage; completed retries/reopen/relocation make no additional counted synthetic callback calls. No actual model/provider or protected adapter is enabled. Model-bound generation orchestration and full indexing/lifecycle integration remain the next source gate.
+
 | Stage | Completion boundary |
 | --- | --- |
 | S2 remainder | SP2 supplies a bounded trusted-host expansion seam; qualify real resolver confinement, relocation/offline lifecycle and transport integration without treating a historical observation or returned object as a later-open capability |
 | S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
-| S4 | S4a supplies owner-mode resumable generations, prior-pointer recovery, bounded coverage and selection replacement. Compatible embedding reuse, automatic indexing/adapter integration, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
+| S4 | S4a supplies owner-mode generation checkpoints/atomic selection; S4b supplies source-group-scoped exact embedding artifacts and a counted callback seam. Model-bound generation orchestration, indexing/adapter integration, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
 | P2 remainder | Required vector formats, graph/canonical/hybrid entry points, remaining guarded write paths and explicit unsupported-path refusals |
 | P3 | Derivative inheritance, revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit |
 | P4 | The same trusted contract through SDK, CLI, MCP, Hermes and resolvers; protected activation only after supported surfaces pass |
