@@ -22,6 +22,8 @@ class RefusalReason(str, Enum):
     POLICY_MISMATCH = "policy_mismatch"
     INVALID_SELECTION = "invalid_selection"
     UNSUPPORTED_SURFACE = "unsupported_surface"
+    ACCESS_DENIED = "access_denied"
+    CONTEXT_UNAVAILABLE = "context_unavailable"
 
 
 class PolicyRefusal(PermissionError):

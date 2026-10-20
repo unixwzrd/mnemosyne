@@ -1,0 +1,182 @@
+"""Explicit authorized bank-level reads; not store-wide protected activation."""
+
+from __future__ import annotations
+
+import inspect
+import sqlite3
+from dataclasses import dataclass
+from typing import Callable, FrozenSet, Optional, Union
+
+from mnemosyne.core.policy import (
+    AccessContext, AdapterCapabilities, PolicyRefusal, PolicySurface, RefusalReason,
+    _labels, _number, _text,
+)
+from mnemosyne.core.policy_store import PolicyStore, RecordKind, _identity
+from mnemosyne.runtime_context import get_access_context
+
+
+@dataclass(frozen=True, repr=False)
+class BankReadGrant:
+    """Host-verified bank-wide scope; constructing a grant is not authentication."""
+
+    context_fingerprint: str
+    domain_id: str
+    bank: str
+    destination: str
+    decision_id: str
+    owners: FrozenSet[str]
+    tenants: FrozenSet[str] = frozenset()
+
+    def __post_init__(self):
+        fingerprint = _text(self.context_fingerprint, "context_fingerprint", 64)
+        if len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint):
+            raise ValueError("context_fingerprint must be a SHA-256 hex digest")
+        for name in ("domain_id", "bank", "destination", "decision_id"):
+            _text(getattr(self, name), name)
+        for name in ("owners", "tenants"):
+            object.__setattr__(self, name, _labels(getattr(self, name), name))
+
+
+@dataclass(frozen=True, repr=False)
+class AuthorizedCandidate:
+    record_kind: RecordKind
+    record_id: Union[str, int]
+    bank: str
+    binding_id: str
+    policy_id: str
+    policy_version: int
+    classification: str
+    decision_id: str
+    context_id: str
+    context_epoch: int
+
+
+@dataclass(frozen=True, repr=False)
+class AuthorizedMemory(AuthorizedCandidate):
+    content: str
+
+
+class PolicyReader:
+    """Read-only prototype requiring a fresh trusted decision on every call.
+
+    Legacy APIs are deliberately unchanged. The host owns authentication, current
+    epochs, participant intersection and binding destinations to actual consumers.
+    """
+
+    capabilities = AdapterCapabilities("core-policy-reader", {PolicySurface.DIRECT})
+
+    def __init__(self, store: PolicyStore, *, bank: str, verify_context: Callable):
+        if not isinstance(store, PolicyStore):
+            raise TypeError("store must be an explicit PolicyStore")
+        if not callable(verify_context) or inspect.iscoroutinefunction(verify_context):
+            raise TypeError("verify_context must be a synchronous trusted verifier")
+        self._store = store
+        self._bank = _text(bank, "bank")
+        self._verify = verify_context
+
+    def _decision(self, destination: str) -> tuple[AccessContext, BankReadGrant]:
+        destination = _text(destination, "destination")
+        context = get_access_context(required=True)
+        if context.projects or context.assurance != "authenticated":
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        if self._bank not in context.banks or destination not in context.destinations or "read:bank" not in context.operations:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        try:
+            grant = self._verify(context, bank=self._bank, destination=destination)
+        except PolicyRefusal:
+            raise
+        except Exception:
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE) from None
+        if inspect.isawaitable(grant):
+            if inspect.iscoroutine(grant):
+                grant.close()
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        if not isinstance(grant, BankReadGrant) or (
+            grant.context_fingerprint != context.fingerprint()
+            or grant.bank != self._bank or grant.destination != destination
+        ):
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        if sum(map(len, (grant.owners, grant.tenants, context.audiences, context.compartments))) > 900:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        return context, grant
+
+    def _selection(self, kind, context, grant, record_id=None):
+        domain = self._store._domain(required=True)
+        if domain.domain_id != grant.domain_id:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        definition = self._store._definition(context.policy_id, context.policy_version)
+        if definition is None:
+            raise PolicyRefusal(RefusalReason.POLICY_MISMATCH)
+        definition.validate_context(context)
+        params = [kind.value, context.policy_id, context.policy_version,
+                  definition.levels.index(context.classification_ceiling)]
+
+        def selected(column, values):
+            values = sorted(values)
+            params.extend(values)
+            return f"{column} IN ({','.join('?' for _ in values)})" if values else "0"
+
+        owner = selected("b.owner", grant.owners)
+        tenant = selected("b.tenant_id", grant.tenants)
+        audience = selected("t.value", context.audiences)
+        compartment = selected("t.value", context.compartments)
+        params.append(context.purpose)
+        target = ""
+        if record_id is not None:
+            target = "AND b.record_id=?"
+            params.append(record_id)
+        # Fence the metadata-only authorized relation before joining native content.
+        sql = f"""WITH eligible AS MATERIALIZED (
+            SELECT b.record_id,b.binding_id,b.policy_id,b.policy_version,b.classification
+            FROM main.policy_bindings AS b JOIN main.policy_levels AS l
+              ON l.policy_id=b.policy_id AND l.version=b.policy_version AND l.label=b.classification
+            WHERE b.record_kind=? AND b.policy_id=? AND b.policy_version=? AND l.rank<=?
+              AND ({owner}) AND (b.tenant_id IS NULL OR ({tenant}))
+              AND EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
+                  WHERE t.binding_id=b.binding_id AND t.dimension='audiences' AND ({audience}))
+              AND NOT EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
+                  WHERE t.binding_id=b.binding_id AND t.dimension='compartments' AND NOT ({compartment}))
+              AND EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
+                  WHERE t.binding_id=b.binding_id AND t.dimension='purposes' AND t.value=?)
+              AND NOT EXISTS (SELECT 1 FROM main.policy_binding_terms AS t
+                  WHERE t.binding_id=b.binding_id AND t.dimension NOT IN ('audiences','compartments','purposes'))
+              {target}
+        )"""
+        return sql, params
+
+    def _read(self, kind, *, destination, record_id=None, limit=100, offset=0):
+        context, grant = self._decision(destination)
+        with self._store._transaction():
+            sql, params = self._selection(kind, context, grant, record_id)
+            content = ",n.body" if kind is RecordKind.CANONICAL else ",n.content"
+            if record_id is None:
+                content = ""
+            sql += f""" SELECT n.id,e.binding_id,e.policy_id,e.policy_version,e.classification{content}
+                FROM eligible AS e JOIN main.{kind.value} AS n
+                  ON n.id=e.record_id AND CAST(n.id AS TEXT)=e.record_id
+                ORDER BY n.id LIMIT ? OFFSET ?"""
+            params.extend((limit, offset))
+            rows = self._store.conn.execute(sql, params).fetchall()
+        result = []
+        for row in rows:
+            values = (kind, row[0], self._bank, *row[1:5], grant.decision_id, context.context_id, context.epoch)
+            result.append(AuthorizedCandidate(*values) if record_id is None else AuthorizedMemory(*values, row[5]))
+        return result
+
+    def get(self, kind: RecordKind, record_id, *, destination: str) -> Optional[AuthorizedMemory]:
+        """Return one authorized record, or None for both absent and denied IDs."""
+        identity = _identity(kind, record_id)
+        records = self._read(kind, destination=destination, record_id=identity, limit=1)
+        return records[0] if records else None
+
+    def candidate_ids(self, kind: RecordKind, *, destination: str, limit: int = 100, offset: int = 0):
+        """List authorized native IDs/provenance without reading native content."""
+        if not isinstance(kind, RecordKind):
+            raise ValueError("record_kind must be a supported RecordKind")
+        _number(limit, "limit")
+        _number(offset, "offset", minimum=0)
+        if limit > 1000:
+            raise ValueError("limit must be at most 1000")
+        return self._read(kind, destination=destination, limit=limit, offset=offset)
