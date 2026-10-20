@@ -163,7 +163,7 @@ class PolicyStore:
                 found = False
                 for index in unique:
                     if index[2] and not index[4]:
-                        indexed = self.conn.execute("SELECT name FROM pragma_index_info(?, 'main') ORDER BY seqno", (index[1],)).fetchall()
+                        indexed = self.conn.execute("SELECT name FROM main.pragma_index_info(?, 'main') ORDER BY seqno", (index[1],)).fetchall()
                         if tuple(r[0] for r in indexed) == _UNIQUE[table]:
                             found = True
                 if not found:

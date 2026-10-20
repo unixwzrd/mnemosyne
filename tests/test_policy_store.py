@@ -203,6 +203,7 @@ def test_temporary_tables_cannot_shadow_real_policy_or_parent_rows(store):
     before = store.get_binding(RecordKind.WORKING, "w")
     store.conn.execute("CREATE TEMP TABLE policy_bindings (binding_id TEXT)")
     store.conn.execute("CREATE TEMP TABLE policy_store_state (mode TEXT)")
+    store.conn.execute("CREATE TEMP TABLE pragma_index_info (name TEXT, seqno INTEGER)")
     store.conn.execute("CREATE TEMP TABLE working_memory (id TEXT)")
     store.conn.execute("INSERT INTO temp.working_memory VALUES ('fake')")
     store.conn.commit()
