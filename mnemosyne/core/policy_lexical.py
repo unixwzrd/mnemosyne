@@ -27,7 +27,7 @@ def _require_fts_surface(conn, kind):
     columns = (r"id\s+UNINDEXED\s*,\s*content" if working else
                r"content\s*,\s*content\s*=\s*'episodic_memory'\s*,\s*content_rowid\s*=\s*'rowid'")
     pattern = rf"CREATE\s+VIRTUAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{fts}\s+USING\s+fts5\s*\(\s*{columns}\s*\)"
-    if actual != expected or row is None or row[0] is None or re.fullmatch(pattern, row[0].strip(), re.I) is None:
+    if actual != expected or row is None or row[0] is None or re.fullmatch(pattern, row[0].strip(), re.I | re.ASCII) is None:
         raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
 
 

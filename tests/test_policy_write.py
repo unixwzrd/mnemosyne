@@ -506,3 +506,17 @@ def test_changed_fts_configuration_refuses_without_native_or_policy_write(creati
         actual.fingerprint(), "domain:a", kw["bank"], kw["destination"], "read:a", {"person:a"}, {"tenant:a"}))
     with bind_access_context(ctx), pytest.raises(PolicyRefusal, match="unsupported_surface"):
         beam.recall_authorized_lexical("the and", reader=reader, destination="channel:a")
+
+
+@pytest.mark.parametrize("target,rowid", [("epi\u017fodic_memory", "rowid"), ("ep\u0130sodic_memory", "rowid"),
+                                          ("episodic_memory", "row\u0131d")])
+def test_unicode_casefold_cannot_alias_native_fts_mapping(creation, target, rowid):
+    beam = creation[0]
+    beam.conn.execute("DROP TABLE main.fts_episodes")
+    beam.conn.execute(f"CREATE VIRTUAL TABLE main.fts_episodes USING fts5(content,content='{target}',content_rowid='{rowid}')")
+    beam.conn.commit()
+    changes = beam.conn.total_changes
+    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
+        create(creation, kind=RecordKind.EPISODIC)
+    assert beam.conn.total_changes == changes
+    assert beam.conn.execute("SELECT count(*) FROM episodic_memory").fetchone()[0] == 0
