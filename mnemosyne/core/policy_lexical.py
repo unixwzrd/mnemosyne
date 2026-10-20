@@ -78,7 +78,12 @@ def recall_authorized_lexical(beam, query, *, reader, destination, projects=None
             params.extend(native_params)
             # Verify required native mappings even for a valid empty query.
             conn.execute(sql + " SELECT native_id FROM native_eligible LIMIT 0", params)
-            conn.execute(f"SELECT {fts_key} FROM main.{fts} LIMIT 0")
+            conn.execute(f"SELECT content FROM main.{kind.value} LIMIT 0")
+            normal_columns = (("id", 0), ("content", 0)) if kind is RecordKind.WORKING else (("content", 0),)
+            expected_fts = (*normal_columns, (fts, 1), ("rank", 1))
+            actual_fts = tuple((row[1], row[6]) for row in conn.execute(f"PRAGMA main.table_xinfo('{fts}')"))
+            if actual_fts != expected_fts:
+                raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             if not terms:
                 if _has_cjk(query) or _has_cyrillic(query) or _symbolic_code_tokens(query):
                     raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
@@ -106,12 +111,13 @@ def recall_authorized_lexical(beam, query, *, reader, destination, projects=None
                 chunk = ordered[start:start + 64]
                 placeholders = ",".join("?" for _ in chunk)
                 content_sql = sql + f""" SELECT ne.native_id,ne.binding_id,ne.policy_id,ne.policy_version,ne.classification,
-                    CASE WHEN typeof(n.content)='text' AND length(n.content)<=? THEN n.content ELSE NULL END,
-                    typeof(n.content),length(n.content)
+                    CASE WHEN typeof(n.content)='text' AND instr(n.content,char(0))=0 AND length(n.content)<=?
+                         THEN n.content ELSE NULL END,
+                    typeof(n.content),length(n.content),instr(n.content,char(0))
                     FROM native_eligible AS ne JOIN main.{kind.value} AS n ON n.id=ne.native_id
                     WHERE ne.native_id IN ({placeholders}) ORDER BY ne.native_id"""
                 for row in conn.execute(content_sql, (*params, MAX_SCORING_CHARACTERS, *chunk)).fetchall():
-                    if row[6] != "text":
+                    if row[6] != "text" or row[8] != 0:
                         raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
                     if row[7] > MAX_SCORING_CHARACTERS:
                         raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)

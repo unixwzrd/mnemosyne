@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import socket
 import sqlite3
 import statistics
 import sys
@@ -171,16 +172,24 @@ def test_no_legacy_recall_fallback_ranker_provider_or_query_logging(lexical, mon
     beam, *_ = lexical
     seed(lexical, "w")
 
+    attempts = []
+
     def forbidden(*args, **kwargs):
+        attempts.append("unsupported path")
         raise AssertionError("unsupported retrieval/provider path invoked")
 
     for name in ("_fts_search", "_fts_search_working", "_cjk_like_search", "_cyrillic_like_search", "_wm_vec_search"):
         monkeypatch.setattr(beam_module, name, forbidden)
     monkeypatch.setattr(BeamMemory, "recall", forbidden)
-    from mnemosyne.core import embeddings
-    for name in ("get_embedding", "_get_model", "_embed_api"):
+    from mnemosyne.core import embeddings, llm_backends, local_llm
+    for name in ("get_embedding", "embed_query", "embed_text", "_get_model", "_embed_api"):
         if hasattr(embeddings, name):
             monkeypatch.setattr(embeddings, name, forbidden)
+    for name in ("_download_model", "_load_llm_llamacpp", "_load_llm_ctransformers", "_call_remote_llm_with_model"):
+        monkeypatch.setattr(local_llm, name, forbidden)
+    monkeypatch.setattr(llm_backends, "call_host_llm", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
     statements = []
     beam.conn.set_trace_callback(statements.append)
     assert [hit.record_id for hit in recall(lexical).hits] == ["w"]
@@ -189,6 +198,7 @@ def test_no_legacy_recall_fallback_ranker_provider_or_query_logging(lexical, mon
     forbidden_sql = [sql for sql in statements if any(word in sql.lower() for word in ("bm25", "insert ", "update ", "delete "))
                      or ("fts_" in sql.lower() and "order by rank" in sql.lower())]
     assert not forbidden_sql, forbidden_sql
+    assert not attempts
 
 
 @pytest.mark.parametrize("kind", [RecordKind.WORKING, RecordKind.EPISODIC])
@@ -240,6 +250,15 @@ def test_hangul_exact_stage_retains_target_amid_authorized_prefix_flood(lexical)
     assert report.examined_candidates <= 3
 
 
+def test_stage_overflow_false_is_not_a_completeness_certificate(lexical):
+    query = "\ubc14\ub098\ub098"
+    seed(lexical, "z-exact", text=query)
+    seed(lexical, "a-expansion", text="\ubc14\ub098" + "00")
+    report = recall(lexical, query, top_k=1, candidate_limit=1)
+    assert [hit.record_id for hit in report.hits] == ["z-exact"]
+    assert report.examined_candidates == 1 and report.truncated is False
+
+
 def test_full_label_budget_and_content_chunks_fit_historical_variable_limit(lexical):
     beam, _, ctx, registry, _ = lexical
     for i in range(70):
@@ -271,7 +290,7 @@ def test_missing_fts_and_catalog_errors_never_return_partial_success(lexical):
     seed(lexical, "w")
     beam.conn.execute("DROP TABLE fts_episodes")
     beam.conn.commit()
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
         recall(lexical)
     assert not beam.conn.in_transaction
 
@@ -280,6 +299,25 @@ def test_missing_policy_schema_refuses_even_stopword_query(lexical):
     beam, *_ = lexical
     beam.conn.execute("DROP INDEX idx_policy_terms_reverse")
     with pytest.raises(PolicyStoreError, match="incompatible"):
+        recall(lexical, "the and")
+
+
+@pytest.mark.parametrize("fts,columns", [("fts_working", "id TEXT, content TEXT, fts_working TEXT, rank TEXT"),
+                                         ("fts_episodes", "content TEXT, fts_episodes TEXT, rank TEXT")])
+def test_empty_query_refuses_ordinary_table_instead_of_fts5(lexical, fts, columns):
+    beam, *_ = lexical
+    beam.conn.execute(f"DROP TABLE main.{fts}")
+    beam.conn.execute(f"CREATE TABLE main.{fts}({columns})")
+    beam.conn.commit()
+    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
+        recall(lexical, "the and")
+
+
+@pytest.mark.parametrize("kind", [RecordKind.WORKING, RecordKind.EPISODIC])
+def test_empty_query_refuses_missing_native_content_mapping(lexical, kind):
+    beam, *_ = lexical
+    beam.conn.execute(f"ALTER TABLE main.{kind.value} RENAME COLUMN content TO old_content")
+    with pytest.raises(sqlite3.DatabaseError):
         recall(lexical, "the and")
 
 
@@ -324,6 +362,21 @@ def test_oversized_authorized_memory_refuses_without_python_materialization(lexi
 
     beam.conn.row_factory = guarded
     with pytest.raises(PolicyRefusal, match="resource_limit"):
+        recall(lexical)
+
+
+@pytest.mark.parametrize("kind", [RecordKind.WORKING, RecordKind.EPISODIC])
+@pytest.mark.parametrize("tail_size", [1, 100000])
+def test_embedded_nul_cannot_bypass_native_scoring_bound(lexical, kind, tail_size):
+    beam, *_ = lexical
+    seed(lexical, "nul", text="orion gateway\x00" + "x" * tail_size, kind=kind)
+
+    def guarded(cursor, row):
+        assert all("\x00" not in value and len(value) <= MAX_SCORING_CHARACTERS for value in row if isinstance(value, str))
+        return sqlite3.Row(cursor, row)
+
+    beam.conn.row_factory = guarded
+    with pytest.raises(PolicyStoreError, match="incompatible"):
         recall(lexical)
 
 
