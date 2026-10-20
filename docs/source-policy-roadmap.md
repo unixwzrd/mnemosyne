@@ -30,6 +30,8 @@ At that runtime checkpoint, 580 selected regressions pass on Python 3.12 and all
 
 P2e, on this dependent topic, adds [explicit atomic native creation](policy-write-contract.md) for working and episodic memories. A fresh host grant is bound to the exact request and input digest; native text, FTS and immutable policy are written together. It does not upsert or deduplicate existing rows, infer input classification from clearance, call a model, add embeddings, update/delete/reclassify existing memories or silently write from project-only context. Caller-owned transactions return a pending result until their owner commits. This is creation-only core functionality, not completion of protected writes across the system.
 
+P2e's tested runtime checkpoint is `b94d5b7894e80f4390785da9df1adb3c056cc0d7`; subsequent qualification text is documentation only. At that checkpoint, 647 selected regressions pass on Python 3.12. All 67 new creation cases pass on Python 3.12-3.14; Python 3.10/3.11 pass 65 with two explicit skips for their unavailable sqlite3 autocommit API. Tests cover both tiers, FTS/policy atomicity, request binding, caller ownership, process interruption, independent-connection contention and refusal without overwrite. An exact-commit offline wheel passes real installed-target creation/recall/rollback/schema checks in a minimal PyYAML-only environment without source paths. These results are not complete core/Hermes CI, power-loss, production-authentication or protected-mode acceptance.
+
 ## Remaining Delivery Stages
 
 | Stage | Completion boundary |
