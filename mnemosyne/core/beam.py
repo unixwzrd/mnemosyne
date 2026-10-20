@@ -6150,6 +6150,15 @@ class BeamMemory:
         except Exception:
             pass  # Streaming failures must never block memory operations
 
+    def create_authorized(self, content: str, *, writer, record_kind, record_id: str, destination: str):
+        """Atomic creation with a request-bound host policy; no legacy write retrofit."""
+        from mnemosyne.core.policy_write import create_authorized
+
+        return create_authorized(
+            self, content, writer=writer, record_kind=record_kind,
+            record_id=record_id, destination=destination,
+        )
+
     def remember(self, content: str, source: str = "conversation",
                  importance: float = 0.5, metadata: Dict = None,
                  valid_until: str = None, scope: str = "session",
