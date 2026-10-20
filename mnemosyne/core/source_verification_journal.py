@@ -258,6 +258,10 @@ class SourceVerificationJournal:
                 "ON CONFLICT(revision_id, event_key) DO NOTHING",
                 (1, event_id, event_key, producer, *(payload[name] for name in _OBS_COLUMNS)),
             )
+            # count_changes can make INSERT return a row until stepped to EOF.
+            cursor.fetchall()
+            if cursor.rowcount not in (0, 1):
+                raise VerificationJournalError("invalid_record")
             row = self.conn.execute(
                 f"SELECT {_SELECT} FROM main.{_TABLE} WHERE revision_id = ? AND event_key = ?",
                 (observation.revision_id, event_key),

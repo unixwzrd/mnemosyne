@@ -163,7 +163,7 @@ def test_unsupported_original_representation_remains_unverified(store):
     {"observed_byte_size": True}, {"expected_byte_size": -1},
     {"expected_byte_size": 1.25}, {"observed_byte_size": 1073741826},
     {"checked_at": "2026-10-20T00:00:00"}, {"checked_at": "2026-02-30T00:00:00Z"},
-    {"locator": "data://inline"}, {"locator": "archive://bad\n"},
+    {"locator": "data://inline"}, {"locator": "javascript://inline"}, {"locator": "archive://bad\n"},
     {"asset_id": None}, {"expected_sha256": "bad"}, {"revision_id": ""},
     {"producer": ""}, {"event_key": "\n"},
 ])
@@ -490,3 +490,62 @@ finally:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert journal.list(value.revision_id) == before
     assert store.find_asset_by_ref("url", "archive://legacy/new-asset") is not None
+
+
+@pytest.mark.parametrize("count_changes", [False, True])
+@pytest.mark.parametrize("caller_owned", [False, True])
+def test_owned_reads_then_record_and_count_changes_receipts(store, count_changes, caller_owned):
+    value = observation(store)
+    store.conn.execute(f"PRAGMA count_changes = {int(count_changes)}")
+    journal = SourceVerificationJournal(store)
+    assert journal.get(value.revision_id, event_key="attempt-1") is None
+    assert journal.list(value.revision_id) == []
+    assert not store.conn.in_transaction
+    if caller_owned:
+        store.conn.execute("BEGIN")
+    created = record(journal, value)
+    assert created.status == "created"
+    assert created.transaction_state == ("pending" if caller_owned else "committed")
+    assert journal.get(value.revision_id, event_key="attempt-1").event_id == created.event_id
+    assert record(journal, value).status == "unchanged"
+    assert len(journal.list(value.revision_id)) == 1
+    assert store.conn.in_transaction == caller_owned
+    if caller_owned:
+        store.conn.commit()
+    assert not store.conn.in_transaction
+
+
+@pytest.mark.parametrize("reason", ["revision_missing", "invalid_revision"])
+def test_unbound_revision_reports_are_explicitly_refused(store, reason):
+    value = observation(store)
+    value = replace(value, status="missing" if reason == "revision_missing" else "unverified", reason=reason)
+    before = list(store.conn.iterdump())
+    with pytest.raises(ValueError, match="outcome"):
+        record(SourceVerificationJournal(store), value)
+    assert list(store.conn.iterdump()) == before
+
+
+def test_cleanup_refusal_remains_explicit_and_owner_can_recover(store):
+    value = observation(store)
+    journal = SourceVerificationJournal(store)
+    record(journal, value, event_key="prior")
+    before = journal.list(value.revision_id)
+    store.conn.execute("SAVEPOINT caller")
+
+    def deny(action, first, second, *args):
+        if action == sqlite3.SQLITE_INSERT and first == "media_source_verification_events":
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_SAVEPOINT and first in {"ROLLBACK", "RELEASE"}:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    store.conn.set_authorizer(deny)
+    with pytest.raises(sqlite3.DatabaseError):
+        record(journal, value)
+    assert store.conn.in_transaction
+    # Recovery is the connection owner's decision, not a library callback reset.
+    store.conn.set_authorizer(lambda *args: sqlite3.SQLITE_OK)
+    store.conn.execute("ROLLBACK TO caller")
+    store.conn.execute("RELEASE caller")
+    assert journal.list(value.revision_id) == before
+    assert record(journal, value).status == "created"
