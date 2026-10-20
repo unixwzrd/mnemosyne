@@ -281,6 +281,23 @@ def test_corrupt_records_refuse_without_returning_content(fx, change):
     assert not fx.conn.in_transaction
 
 
+@pytest.mark.parametrize("table,column", (
+    ("media_source_index_generations", "generation_key"),
+    ("media_source_index_generations", "state"),
+    ("media_source_index_generation_items", "state"),
+    ("media_source_index_generation_items", "reason"),
+))
+def test_malformed_utf8_metadata_does_not_enter_decoder_error(fx, table, column):
+    generation = fx.begin()
+    fx.conn.execute(f"UPDATE {table} SET {column}=CAST(x'505249564154455fff' AS TEXT)")
+    fx.conn.commit()
+    for read in (lambda: fx.generations.get(generation), lambda: fx.generations.current("source:a")):
+        with error("invalid-generation-record") as caught:
+            read()
+        assert "PRIVATE" not in str(caught.value)
+        assert not fx.conn.in_transaction
+
+
 @pytest.mark.parametrize("sql", (
     "CREATE TEMP TABLE media_source_index_heads(value)",
     "CREATE TRIGGER changed AFTER UPDATE ON media_source_index_heads BEGIN SELECT 1; END",

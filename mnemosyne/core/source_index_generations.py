@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 
-from .source_index_store import SourceIndexStore, SourceIndexStoreError, _key, _shape, _sql_int, _sql_text
+from .source_index_store import SourceIndexStore, SourceIndexStoreError, _key, _shape, _sql_int
 
 
 _GENERATIONS = "media_source_index_generations"
@@ -51,6 +51,21 @@ def _digest(value):
 def _identity(source_key, generation_key, parent, fingerprints):
     payload = ["source-index-generation:v1", source_key, generation_key, parent, fingerprints]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def _sql_ascii(column, maximum):
+    # Return bounded bytes, not SQLite TEXT: malformed UTF-8 TEXT would otherwise
+    # enter sqlite3's decoder exception, which includes the offending payload.
+    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={maximum} THEN CAST({column} AS BLOB) END"
+
+
+def _decode(value):
+    if type(value) is bytes:
+        try:
+            return value.decode("ascii")
+        except UnicodeDecodeError:
+            pass
+    return None
 
 
 @dataclass(frozen=True)
@@ -140,9 +155,9 @@ class SourceIndexGenerations:
         if catalogue is None:
             raise SourceIndexStoreError("source-not-registered")
         plans = catalogue[1]
-        rows = self.conn.execute(f"""SELECT {_sql_text('generation_id', 64)},
-            {_sql_text('generation_key', 128)}, {_sql_text('parent_id', 64)},
-            parent_id IS NULL, {_sql_text('state', 16)} FROM main.{_GENERATIONS}
+        rows = self.conn.execute(f"""SELECT {_sql_ascii('generation_id', 64)},
+            {_sql_ascii('generation_key', 128)}, {_sql_ascii('parent_id', 64)},
+            parent_id IS NULL, {_sql_ascii('state', 16)} FROM main.{_GENERATIONS}
             WHERE source_key=? LIMIT 65""", (source_key,)).fetchall()
         result = {}
         keys = set()
@@ -150,6 +165,7 @@ class SourceIndexGenerations:
             if len(rows) > 64:
                 raise ValueError
             for generation_id, key, parent, parent_null, state in rows:
+                generation_id, key, parent, state = map(_decode, (generation_id, key, parent, state))
                 _digest(generation_id)
                 _key(key)
                 if not parent_null:
@@ -160,9 +176,10 @@ class SourceIndexGenerations:
                 items = []
                 fingerprints = set()
                 for ordinal, fingerprint, item_state, reason, reason_null in self.conn.execute(f"""SELECT
-                    {_sql_int('ordinal')}, {_sql_text('fingerprint', 64)}, {_sql_text('state', 16)},
-                    {_sql_text('reason', 32)}, reason IS NULL FROM main.{_ITEMS}
+                    {_sql_int('ordinal')}, {_sql_ascii('fingerprint', 64)}, {_sql_ascii('state', 16)},
+                    {_sql_ascii('reason', 32)}, reason IS NULL FROM main.{_ITEMS}
                     WHERE generation_id=? ORDER BY ordinal LIMIT 129""", (generation_id,)).fetchall():
+                    fingerprint, item_state, reason = map(_decode, (fingerprint, item_state, reason))
                     _digest(fingerprint)
                     if (type(ordinal) is not int or ordinal != len(items) or len(items) >= 128
                         or fingerprint in fingerprints or item_state not in _REASONS
@@ -188,12 +205,12 @@ class SourceIndexGenerations:
                         raise ValueError
                     seen.add(ancestor.generation_id)
                     ancestor = result.get(ancestor.parent_id)
-            head = self.conn.execute(f"SELECT {_sql_text('generation_id', 64)}, generation_id IS NULL FROM main.{_HEADS} WHERE source_key=?", (source_key,)).fetchone()
+            head = self.conn.execute(f"SELECT {_sql_ascii('generation_id', 64)}, generation_id IS NULL FROM main.{_HEADS} WHERE source_key=?", (source_key,)).fetchone()
             if head is None:
                 if result:
                     raise ValueError
                 return None, result
-            current = head[0]
+            current = _decode(head[0])
             if not head[1] and (current not in result or result[current].state != "published"):
                 raise ValueError
             # Every published generation must belong to the current ancestry.
@@ -208,11 +225,11 @@ class SourceIndexGenerations:
             raise SourceIndexStoreError("invalid-generation-record") from None
 
     def _locate(self, generation_id):
-        row = self.conn.execute(f"SELECT {_sql_text('source_key', 128)} FROM main.{_GENERATIONS} WHERE generation_id=?", (generation_id,)).fetchone()
+        row = self.conn.execute(f"SELECT {_sql_ascii('source_key', 128)} FROM main.{_GENERATIONS} WHERE generation_id=?", (generation_id,)).fetchone()
         if row is None:
             raise SourceIndexStoreError("generation-not-found")
         try:
-            source_key = _key(row[0])
+            source_key = _key(_decode(row[0]))
         except SourceIndexStoreError:
             raise SourceIndexStoreError("invalid-generation-record") from None
         current, generations = self._audit(source_key)
