@@ -1,5 +1,7 @@
 # Trusted Host Participant And Routing Contract
 
+Run the complete disposable example with `python -B examples/protected_memory_demo.py` in an isolated environment with the optional `protected` dependency and supported SQLite serialization (normally Python 3.11+). It creates only synthetic RAM memory and uniquely owned temporary encrypted/authority/audit fixtures, exercises a broader agent plus narrower human, exact compact output, old-epoch refusal and a fresh request, and removes those fixtures on exit. It never opens a default bank, saves a key, calls a model, fetches a source or changes installed configuration. [Example source](../examples/protected_memory_demo.py) and its subprocess test are part of this candidate; the byte tokenizer is explicitly synthetic, not a deployed model estimate.
+
 The reference `ProtectedHostAdapter` bridges an already authenticated transport request to the guarded owner SDK. It computes the effective all-participant intersection and selects store/destination from trusted host state, not tool arguments. It is an opt-in Python integration API, not a new authentication service, mandatory gateway or installed CLI/MCP/Hermes plugin. No production route or migration is enabled by importing it.
 
 ## Required Host Inputs

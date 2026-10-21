@@ -2,6 +2,8 @@
 
 Additive owner APIs: [protected storage](protected-storage-design.md), [publication and independent authority](protected-owner-contract.md), [audited owner sessions](protected-session-api.md), and [compact token-budgeted evidence](compact-recall-api.md). These explicit library APIs do not install legacy adapter hooks or authorize deployment.
 
+For complete-participant intersection, host-selected routing and fixed read dispatch, see the [trusted host contract](protected-host-api.md) and [complete disposable example](../examples/protected_memory_demo.py). The host must supply an authenticated, independently current atomic roster/grant snapshot; model claims are not credentials. Legacy CLI/MCP/Hermes wiring and live migration are separate acceptance gates.
+
 This guide describes the downstream source/policy contribution, not an upstream release or a production activation procedure. Existing banks, adapters and unconfigured calls retain their behavior. Preparing a catalog does **not** make ordinary BEAM, CLI, MCP, Hermes, plugins, exports or old clients enforce policy. Do not put protected data through those paths until their parity/activation gates pass.
 
 ## Architecture And Authority
