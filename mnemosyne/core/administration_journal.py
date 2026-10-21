@@ -190,9 +190,12 @@ class AdministrationJournal:
     def _head(self, *, allow_prepared=False):
         capacity = self._schema()
         self._dedicated()
+        root = self._witness.publication(self._journal_id, "admin-journal:root")
+        if root is None or root.checkpoint != self._root():
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
         row = self._row()
-        count = self._store.conn.execute("SELECT count(*) FROM main.administration_journal_events").fetchone()[0]
-        if count > 3 * capacity or count != (row[0].sequence if row else 0):
+        count, minimum = self._store.conn.execute("SELECT count(*),min(sequence) FROM main.administration_journal_events").fetchone()
+        if count > 3 * capacity or count != (row[0].sequence if row else 0) or (count and minimum != 1):
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
         checkpoint = self._checkpoint(row[0].sequence, row[2]) if row else self._root()
         if not allow_prepared or row is None or row[3] == "committed":
@@ -207,6 +210,9 @@ class AdministrationJournal:
         receipt = self._witness.publication(self._journal_id, "admin-journal:" + str(row[0].sequence))
         if receipt is None or receipt.checkpoint != expected:
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
+        self._reference(row)
+
+    def _reference(self, row):
         if row[0].kind != "intent":
             intent = self._row(operation_id=row[0].operation_id, kind="intent")
             if (intent is None or intent[0].sequence >= row[0].sequence
@@ -222,6 +228,7 @@ class AdministrationJournal:
             row, checkpoint = self._head(allow_prepared=True)
             if row is None or row[3] == "committed":
                 return None if row is None else row[0]
+            self._reference(row)
             prior = self._row(sequence=row[0].sequence - 1) if row[0].sequence > 1 else None
             if prior is not None:
                 self._anchored(prior)

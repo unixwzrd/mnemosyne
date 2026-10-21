@@ -1,13 +1,13 @@
 """Witnessed synthetic audit metadata, independent from grant/content rights."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 import sqlite3
 
 import pytest
 
-from mnemosyne.core.administration_audit_contract import AdministrationJournalRead
+from mnemosyne.core.administration_audit_contract import AdministrativeActor, AdministrationIntent, AdministrationJournalRead
 from mnemosyne.core.administration_journal import AdministrationJournal, _DDL
 from mnemosyne.core.host_grant_administration import GrantAdministration
 from mnemosyne.core.policy import PolicyRefusal
@@ -48,6 +48,21 @@ def apply(fixture):
 def read(audited):
     _, journal, reader, *_ = audited
     return journal.read(reader, destination="audit:private")
+
+
+def intent_for(fixture):
+    admin, owner, _, reviewer, *_ = fixture
+    plan = preview(fixture)
+    admin.approve(reviewer, plan)
+    pending = admin._pending[plan.operation_id]
+    candidate = admin._candidate(owner.current(), (plan.principal_id, plan.store_id), plan.replacement)
+
+    def actor(claim):
+        return AdministrativeActor(claim.issuer, claim.principal_id, claim.separation_id,
+                                   claim.authorization_revision, claim.epoch, claim.fingerprint())
+
+    return AdministrationIntent(plan.operation_id, plan.digest, plan.previous, candidate.revision,
+        plan.principal_id, plan.store_id, actor(pending.actor), actor(pending.approver))
 
 
 def test_intent_precedes_configuration_and_completion_is_attributed(audited):
@@ -403,3 +418,88 @@ def test_observation_cannot_forget_a_committed_receipt_after_config_restore(audi
     finally:
         for backup in backups:
             backup.close()
+
+
+@pytest.mark.parametrize("audited", [1], indirect=True)
+def test_nonempty_journal_capacity_stays_bound_to_witnessed_root(audited):
+    fixture, journal, _, _, conn, _ = audited
+    journal.append_intent(intent_for(fixture), owner=fixture[1])
+    before = journal._witness.current(journal._journal_id)
+    conn.execute("DROP TRIGGER administration_journal_state_no_update")
+    conn.execute("UPDATE administration_journal_state SET max_operations=2")
+    conn.execute(_DDL["administration_journal_state_no_update"])
+    conn.commit()
+    with pytest.raises(PolicyRefusal):
+        journal.append_intent(intent_for(fixture), owner=fixture[1])
+    with pytest.raises(PolicyRefusal):
+        read(audited)
+    with pytest.raises(PolicyRefusal):
+        journal.recover()
+    assert journal._witness.current(journal._journal_id) == before
+
+
+@pytest.mark.parametrize("hidden_sequence", [0, -1])
+def test_nonpositive_sequence_cannot_hide_missing_event(audited, hidden_sequence):
+    fixture, journal, _, _, conn, _ = audited
+    for _ in range(2):
+        journal.append_intent(intent_for(fixture), owner=fixture[1])
+    row = conn.execute("SELECT * FROM administration_journal_events WHERE sequence=1").fetchone()
+    conn.execute("DROP TRIGGER administration_journal_events_no_delete")
+    conn.execute("DELETE FROM administration_journal_events WHERE sequence=1")
+    conn.execute("INSERT INTO administration_journal_events VALUES(?,?,?,?,?,?)", (hidden_sequence,) + row[1:])
+    conn.execute(_DDL["administration_journal_events_no_delete"])
+    conn.commit()
+    with pytest.raises(PolicyRefusal):
+        read(audited)
+    with pytest.raises(PolicyRefusal):
+        journal.recover()
+
+
+@pytest.mark.parametrize("mutation", ["intent-digest", "candidate"])
+def test_recovery_checks_semantics_before_witness_publication(audited, monkeypatch, mutation):
+    fixture, journal, _, _, conn, _ = audited
+    admin, owner, *_ = fixture
+    intent = intent_for(fixture)
+    journal.append_intent(intent, owner=owner)
+    pending = admin._pending[intent.operation_id]
+    candidate = admin._candidate(owner.current(), (pending.plan.principal_id, pending.plan.store_id), pending.plan.replacement)
+    owner.stage(candidate.profiles, previous=intent.previous, operation_id=intent.operation_id, registry=candidate.registry)
+    publish = journal._witness.publish
+    monkeypatch.setattr(journal._witness, "publish", lambda *a, **kw: (_ for _ in ()).throw(OSError("interrupted")))
+    with pytest.raises(PolicyRefusal):
+        journal.observe(intent.operation_id, owner=owner)
+    data = json.loads(conn.execute("SELECT payload FROM administration_journal_events WHERE sequence=2").fetchone()[0])
+    if mutation == "intent-digest":
+        data["body"]["intent_sha256"] = "0" * 64
+    else:
+        data["body"]["candidate"]["sha256"] = "0" * 64
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+    conn.execute("DROP TRIGGER administration_journal_finalize_only")
+    conn.execute("UPDATE administration_journal_events SET payload=?,digest=? WHERE sequence=2",
+                 (payload, hashlib.sha256(payload).hexdigest()))
+    conn.execute(_DDL["administration_journal_finalize_only"])
+    conn.commit()
+    monkeypatch.setattr(journal._witness, "publish", publish)
+    before = journal._witness.current(journal._journal_id)
+    with pytest.raises(PolicyRefusal):
+        journal.recover()
+    assert journal._witness.current(journal._journal_id) == before
+    assert owner.receipt(intent.operation_id).phase == "prepared"
+
+
+def test_recovery_cannot_witness_observation_downgrade(audited):
+    fixture, journal, _, _, conn, _ = audited
+    plan, receipt = apply(fixture)
+    first = read(audited)[0]
+    body = {"authority_id": journal._authority_id, "journal_id": journal._journal_id,
+        "operation_id": plan.operation_id, "kind": "prepared", "candidate": asdict(receipt.revision),
+        "intent_sha256": first.intent_sha256}
+    payload = json.dumps({"sequence": 3, "recorded_at": first.recorded_at, "body": body},
+                         sort_keys=True, separators=(",", ":")).encode()
+    conn.execute("INSERT INTO administration_journal_events VALUES(?,?,?,?,?,'prepared')",
+                 (3, plan.operation_id, "prepared", payload, hashlib.sha256(payload).hexdigest()))
+    conn.commit()
+    before = journal._witness.current(journal._journal_id)
+    with pytest.raises(PolicyRefusal):
+        journal.recover()
+    assert journal._witness.current(journal._journal_id) == before
