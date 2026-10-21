@@ -1,6 +1,6 @@
 # Witnessed Administrative Attribution
 
-This optional core journal records the authenticated actors and exact candidate behind grant-administration decisions. It is not a memory store, transport authenticator, grant authority, activation switch or automatic recovery agent. Original documents, grants, prompts, request credentials and complete claim/control sets are not copied into it. Existing non-journaled development APIs and ordinary memory behavior remain unchanged; a host claiming audited administration must explicitly require this journaled path and must not silently fall back to the unjournaled prerequisite.
+This optional core journal records the authenticated actors and exact candidate behind explicitly journaled grant, registry and profile administration. It is not a memory store, transport authenticator, grant authority, activation switch or automatic recovery agent. Original documents, grants, replacement records, prompts, request credentials and complete claim/control sets are not copied into it. Existing non-journaled development APIs and ordinary memory behavior remain unchanged; a host claiming audited administration must explicitly require this journaled path and must not silently fall back to the unjournaled prerequisite. Raw owner writes are not automatically attributed.
 
 ## Storage And Trust
 
@@ -13,6 +13,8 @@ The raw owner, both connections, append/observe/recover APIs and the authenticat
 ## Events And Meaning
 
 An immutable `AdministrationIntent` contains the operation and plan digests, exact predecessor/candidate revisions, one target principal/store pair, and two `AdministrativeActor` attributions. Each attribution records issuer, principal, canonical actor, administrative authorization revision/epoch and a digest of the complete admitted claim. Those hashes bind the reviewed claims without storing their credentials or full scopes. They are not signatures, credentials or proof that a future host authenticator is correct.
+
+`RegistryAdministrationIntent` instead names one exact supported collection/record target, and `ProfileAdministrationIntent` names one exact profile. All three share strict successor/actor/digest requirements and independent witness publication. Existing grant-intent bytes are unchanged; new readers strictly decode the three forms, refusing hybrids/unknown fields. Older readers refuse unsupported intent types rather than reinterpret them. The corresponding [registry facade](host-registry-administration.md) and explicit journaled [profile facade](host-profile-administration.md#independently-witnessed-profile-attribution) require independent approval and canonical control/beneficiary exclusions. This is not an automatic migration or a change to existing journal roots.
 
 | Event kind | What it establishes | What it does not establish |
 | --- | --- | --- |

@@ -16,6 +16,7 @@ import uuid
 from .host_configuration import (
     ConfigurationRevision, HostConfigurationAuthority, _canonical, _snapshot,
 )
+from .administration_audit_contract import AdministrativeActor, ProfileAdministrationIntent
 from .host_profile import ProfileDefinition, _bounded_text
 from .policy import PolicyRefusal, RefusalReason, _number
 from .policy_host import _synchronous
@@ -46,6 +47,7 @@ class AdministrationSnapshot:
     epoch: int
     profiles: frozenset[str]
     capabilities: frozenset[str]
+    controlled_principals: frozenset[str] | None = None
 
     def __post_init__(self):
         for name in ("issuer", "principal_id", "separation_id"):
@@ -63,14 +65,24 @@ class AdministrationSnapshot:
                 or any(type(value) is not str for value in self.capabilities)
                 or not self.capabilities <= ADMINISTRATIVE_CAPABILITIES):
             raise ValueError("explicit supported administrative capabilities required")
+        if self.controlled_principals is not None:
+            if (type(self.controlled_principals) is not frozenset
+                    or not 1 <= len(self.controlled_principals) <= 256
+                    or self.principal_id not in self.controlled_principals):
+                raise ValueError("complete controlled identities including actor required")
+            for identity in self.controlled_principals:
+                _bounded_text(identity, "controlled_principal", 128)
 
     def fingerprint(self):
-        return hashlib.sha256(_canonical({
+        value = {
             "issuer": self.issuer, "principal_id": self.principal_id,
             "separation_id": self.separation_id, "authority_id": self.authority_id,
             "authorization_revision": self.authorization_revision, "epoch": self.epoch,
             "profiles": sorted(self.profiles), "capabilities": sorted(self.capabilities),
-        })).hexdigest()
+        }
+        if self.controlled_principals is not None:
+            value["controlled_principals"] = sorted(self.controlled_principals)
+        return hashlib.sha256(_canonical(value)).hexdigest()
 
 
 @dataclass(frozen=True, repr=False)
@@ -135,7 +147,7 @@ class ProfileAdministration:
     Local admission checks are not atomic with an external identity authority.
     """
 
-    def __init__(self, owner, *, authority_id, issuer, authenticate, lifetime_seconds=60):
+    def __init__(self, owner, *, authority_id, issuer, authenticate, lifetime_seconds=60, journal=None):
         if type(owner) is not HostConfigurationAuthority:
             raise TypeError("exact owner authority required")
         _store_id(authority_id)
@@ -143,6 +155,13 @@ class ProfileAdministration:
         _synchronous(authenticate)
         if type(lifetime_seconds) is not int or not 1 <= lifetime_seconds <= 300:
             raise ValueError("bounded preview lifetime required")
+        # The journal imports this module's entry guard; resolve only when the
+        # explicitly journaled facade is constructed, not during module import.
+        if journal is not None:
+            from .administration_journal import AdministrationJournal
+            if type(journal) is not AdministrationJournal or journal._authority_id != authority_id:
+                raise TypeError("exact same-authority administration journal required")
+        self._journal = journal
         self._owner, self._authority_id = owner, authority_id
         self._issuer, self._authenticate = issuer, authenticate
         self._lifetime = lifetime_seconds
@@ -156,6 +175,7 @@ class ProfileAdministration:
                 claim.close()
             if (type(claim) is not AdministrationSnapshot or claim.issuer != self._issuer
                     or claim.authority_id != self._authority_id or profile_id not in claim.profiles
+                    or (self._journal is not None and claim.controlled_principals is None)
                     or not capabilities <= claim.capabilities or (expected is not None and claim != expected)):
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             return claim
@@ -169,6 +189,42 @@ class ProfileAdministration:
         if current.revision.authority_id != self._authority_id:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return current
+
+    def _audit_controls(self, claim, current):
+        if current.registry is None:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        people = {p.principal_id: p for p in current.registry.principals}
+        actor = people.get(claim.principal_id)
+        if (actor is None or not actor.enabled or actor.issuer != claim.issuer
+                or actor.separation_id != claim.separation_id or claim.controlled_principals is None
+                or not claim.controlled_principals <= people.keys()):
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        return frozenset(people[p].separation_id for p in claim.controlled_principals)
+
+    def _audit_separation(self, claims, profile_id, current):
+        if self._journal is None:
+            return
+        closures = [self._audit_controls(claim, current) for claim in claims]
+        registry = current.registry
+        stores = {s.store_id for s in registry.stores if s.profile_id == profile_id}
+        beneficiaries = {g.principal_id for g in registry.grants if g.store_id in stores}
+        for context in registry.conversations:
+            if context.store_id in stores:
+                beneficiaries.update(context.participants)
+        canonical = {p.separation_id for p in registry.principals if p.principal_id in beneficiaries}
+        if any(closure & canonical for closure in closures) or (len(closures) == 2 and closures[0] & closures[1]):
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+
+    def _audit_policy_namespaces(self, candidate):
+        if self._journal is None:
+            return
+        policies = {}
+        for profile in candidate.profiles:
+            previous = policies.setdefault(profile.policy.policy_id, profile.policy)
+            # Owner version history is keyed by policy ID, not profile ID.
+            # Mixed live versions could poison subsequent unrelated writes.
+            if previous != profile.policy:
+                raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
 
     def _find(self, plan):
         if type(plan) is not AdministrationPlan:
@@ -194,6 +250,8 @@ class ProfileAdministration:
         _bounded_text(profile_id, "profile_id", 128)
         claim = self._fresh(request, profile_id=profile_id, capabilities=frozenset({"profiles:view"}))
         current = self._current()
+        if self._journal is not None:
+            self._audit_controls(claim, current)
         profile = next((p for p in current.profiles if p.profile_id == profile_id), None)
         self._fresh(request, profile_id=profile_id, capabilities=frozenset({"profiles:view"}), expected=claim)
         return ProfileView(current.revision, profile)
@@ -213,6 +271,8 @@ class ProfileAdministration:
         if replacement is not None:
             profiles += (replacement,)
         candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry)
+        self._audit_policy_namespaces(candidate)
+        self._audit_separation((claim,), profile_id, current)
         self._fresh(request, profile_id=profile_id,
                     capabilities=frozenset({"profiles:view", "profiles:" + kind}), expected=claim)
         self._expire()
@@ -232,16 +292,18 @@ class ProfileAdministration:
     @_entry
     def approve(self, request, plan):
         pending = self._find(plan)
-        if plan.change_kind != "policy" or pending.approval is not None:
+        if (plan.change_kind != "policy" and self._journal is None) or pending.approval is not None:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         claim = self._fresh(request, profile_id=plan.profile_id,
                             capabilities=frozenset({"profiles:view", "profiles:approve"}))
+        current = self._current()
         if (claim.principal_id == pending.actor.principal_id
                 or claim.separation_id == pending.actor.separation_id
                 or claim.epoch != pending.actor.epoch
                 or claim.authorization_revision != pending.actor.authorization_revision
-                or self._current().revision != plan.previous):
+                or current.revision != plan.previous):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        self._audit_separation((pending.actor, claim), plan.profile_id, current)
         self._fresh(request, profile_id=plan.profile_id,
                     capabilities=frozenset({"profiles:view", "profiles:approve"}), expected=claim)
         self._find(plan)
@@ -258,8 +320,8 @@ class ProfileAdministration:
     def apply(self, request, plan, *, approval=None):
         pending = self._find(plan)
         self._verify(request, pending)
-        if ((plan.change_kind == "policy" and approval is not pending.approval)
-                or (plan.change_kind == "labels" and approval is not None)):
+        required = plan.change_kind == "policy" or self._journal is not None
+        if ((required and approval is not pending.approval) or (not required and approval is not None)):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         current = self._current()
         if current.revision != plan.previous:
@@ -267,16 +329,31 @@ class ProfileAdministration:
         profiles = tuple(p for p in current.profiles if p.profile_id != plan.profile_id)
         if plan.replacement is not None:
             profiles += (plan.replacement,)
+        if self._journal is not None:
+            candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry)
+            self._audit_policy_namespaces(candidate)
+            self._audit_separation((pending.actor, pending.approver), plan.profile_id, current)
+            self._audit_separation((pending.actor, pending.approver), plan.profile_id, candidate)
         self._verify(request, pending)
         # Consume before the first write: uncertain writes require owner receipt
         # inspection, never an automatic resend through this facade.
         del self._pending[plan.operation_id]
+        if self._journal is not None:
+            def attribution(claim):
+                return AdministrativeActor(claim.issuer, claim.principal_id, claim.separation_id,
+                    claim.authorization_revision, claim.epoch, claim.fingerprint())
+            intent = ProfileAdministrationIntent(plan.operation_id, plan.digest, plan.previous, candidate.revision,
+                plan.profile_id, attribution(pending.actor), attribution(pending.approver))
+            self._journal.append_intent(intent, owner=self._owner)
+            self._admit_after_stage(request, pending)
         receipt = self._owner.stage(profiles, previous=plan.previous, operation_id=plan.operation_id,
                                     registry=current.registry)
         self._admit_after_stage(request, pending)
         self._owner.advance_witness(receipt)
         self._admit_after_stage(request, pending)
         result = self._owner.finalize(receipt)
+        if self._journal is not None:
+            self._journal.observe(plan.operation_id, owner=self._owner)
         self._admit_after_stage(request, pending)
         return result
 
@@ -285,7 +362,7 @@ class ProfileAdministration:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         self._fresh(request, profile_id=pending.plan.profile_id,
                     capabilities=frozenset({"profiles:view", "profiles:" + pending.plan.change_kind}), expected=pending.actor)
-        if pending.plan.change_kind == "policy":
+        if pending.plan.change_kind == "policy" or self._journal is not None:
             if pending.approval is None or pending.approver is None:
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             self._fresh(pending.approval_request, profile_id=pending.plan.profile_id,

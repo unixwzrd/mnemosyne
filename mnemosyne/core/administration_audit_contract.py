@@ -116,10 +116,38 @@ class RegistryAdministrationIntent:
         return cls(**values)
 
 
+@dataclass(frozen=True, repr=False)
+class ProfileAdministrationIntent:
+    operation_id: str
+    plan_sha256: str
+    previous: ConfigurationRevision
+    candidate: ConfigurationRevision
+    profile_id: str
+    proposer: AdministrativeActor
+    approver: AdministrativeActor
+
+    def __post_init__(self):
+        _intent_fields(self)
+        _bounded_text(self.profile_id, "profile_id", 128)
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        values = dict(_exact_dict(data, set(cls.__dataclass_fields__), "profile administrative intent"))
+        for name in ("previous", "candidate"):
+            values[name] = _revision(values[name])
+        for name in ("proposer", "approver"):
+            values[name] = AdministrativeActor.from_dict(values[name])
+        return cls(**values)
+
+
 def _intent(data):
     if type(data) is not dict:
         raise TypeError("exact intent object required")
-    cls = RegistryAdministrationIntent if "target_kind" in data else AdministrationIntent
+    cls = (RegistryAdministrationIntent if "target_kind" in data else
+           ProfileAdministrationIntent if "profile_id" in data else AdministrationIntent)
     return cls.from_dict(data)
 
 
@@ -155,4 +183,4 @@ class AdministrationJournalRecord:
     kind: str
     candidate: ConfigurationRevision
     intent_sha256: str
-    intent: AdministrationIntent | RegistryAdministrationIntent | None
+    intent: AdministrationIntent | RegistryAdministrationIntent | ProfileAdministrationIntent | None

@@ -11,7 +11,8 @@ import stat
 import threading
 
 from .administration_audit_contract import (
-    AdministrationIntent, RegistryAdministrationIntent, AdministrationJournalRead, AdministrationJournalRecord,
+    AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent,
+    AdministrationJournalRead, AdministrationJournalRecord,
     _digest, _intent, _revision,
 )
 from .host_administration import _entry
@@ -297,7 +298,7 @@ class AdministrationJournal:
     @_entry
     def append_intent(self, intent, *, owner):
         self._ready(write=True)
-        if type(intent) not in (AdministrationIntent, RegistryAdministrationIntent) or self._owner(owner).revision != intent.previous:
+        if type(intent) not in (AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent) or self._owner(owner).revision != intent.previous:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return self._append({"authority_id": self._authority_id, "journal_id": self._journal_id,
             "operation_id": intent.operation_id, "kind": "intent", "candidate": asdict(intent.candidate), "intent": intent.to_dict()})
