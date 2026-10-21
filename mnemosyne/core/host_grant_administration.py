@@ -9,6 +9,8 @@ import time
 import uuid
 
 from .host_administration import AdministrationApproval, MAX_PENDING_CHANGES, _entry
+from .administration_audit_contract import AdministrativeActor, AdministrationIntent
+from .administration_journal import AdministrationJournal
 from .host_configuration import ConfigurationRevision, HostConfigurationAuthority, _canonical, _snapshot
 from .host_profile import _bounded_text
 from .host_registry import GrantRegistration
@@ -108,7 +110,7 @@ class GrantAdministration:
     conversations, administrative capabilities, keys, recovery or content.
     """
 
-    def __init__(self, owner, *, authority_id, issuer, authenticate, lifetime_seconds=60):
+    def __init__(self, owner, *, authority_id, issuer, authenticate, lifetime_seconds=60, journal=None):
         if type(owner) is not HostConfigurationAuthority:
             raise TypeError("exact owner authority required")
         _store_id(authority_id)
@@ -116,8 +118,11 @@ class GrantAdministration:
         _synchronous(authenticate)
         if type(lifetime_seconds) is not int or not 1 <= lifetime_seconds <= 300:
             raise ValueError("bounded preview lifetime required")
+        if journal is not None and (type(journal) is not AdministrationJournal or journal._authority_id != authority_id):
+            raise TypeError("exact same-authority administration journal required")
         self._owner, self._authority_id, self._issuer = owner, authority_id, issuer
         self._authenticate, self._lifetime, self._pending = authenticate, lifetime_seconds, {}
+        self._journal = journal
         self._process, self._thread, self._busy = os.getpid(), threading.get_ident(), False
 
     def _fresh(self, request, target, capabilities, expected=None):
@@ -273,11 +278,21 @@ class GrantAdministration:
         # An uncertain write consumes the handle; inspect the owner receipt,
         # never blindly resend a proposal through this facade.
         del self._pending[plan.operation_id]
+        if self._journal is not None:
+            def attribution(claim):
+                return AdministrativeActor(claim.issuer, claim.principal_id, claim.separation_id,
+                                           claim.authorization_revision, claim.epoch, claim.fingerprint())
+            intent = AdministrationIntent(plan.operation_id, plan.digest, plan.previous, candidate.revision,
+                plan.principal_id, plan.store_id, attribution(pending.actor), attribution(pending.approver))
+            self._journal.append_intent(intent, owner=self._owner)
+            self._verify(request, pending)
         receipt = self._owner.stage(candidate.profiles, previous=plan.previous,
                                     operation_id=plan.operation_id, registry=candidate.registry)
         self._verify(request, pending)
         self._owner.advance_witness(receipt)
         self._verify(request, pending)
         result = self._owner.finalize(receipt)
+        if self._journal is not None:
+            self._journal.observe(plan.operation_id, owner=self._owner)
         self._verify(request, pending)
         return result
