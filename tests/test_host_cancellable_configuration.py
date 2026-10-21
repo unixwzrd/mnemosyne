@@ -440,7 +440,9 @@ def test_version_registration_and_finalization_are_one_transaction(cancellable):
         with pytest.raises(sqlite3.DatabaseError):
             owner.finalize(pending)
     finally:
-        conn.set_authorizer(None)
+        # Disabling with None was added in Python 3.11; keep this fixture's
+        # cleanup valid on the supported 3.10 interpreter as well.
+        conn.set_authorizer(lambda *args: sqlite3.SQLITE_OK)
     assert denied == [True]
     assert conn.execute("SELECT max(version) FROM host_committed_profile_versions").fetchone() == (1,)
     assert owner.receipt(pending.operation_id).phase == "prepared"
