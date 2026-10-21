@@ -197,7 +197,7 @@ class PolicyAudit:
         with self._store._transaction(write=True):
             present = conn.execute("SELECT 1 FROM main.sqlite_master WHERE name IN (?,?,?,?) LIMIT 1", tuple(_DDL)).fetchone()
             if present is None:
-                if conn.execute("SELECT 1 FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone():
+                if conn.execute("SELECT 1 FROM main.sqlite_master WHERE substr(name,1,7)!='sqlite_' LIMIT 1").fetchone():
                     raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
                 for ddl in _DDL.values():
                     prefix = "CREATE TRIGGER " if ddl.startswith("CREATE TRIGGER ") else "CREATE TABLE "

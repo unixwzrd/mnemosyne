@@ -349,3 +349,17 @@ def test_admission_refuses_nondurable_journal_without_effect(journal,setting):
     finally:
         if setting == "memory":
             conn.close()
+
+
+@pytest.mark.parametrize("name",["sqliteOther","sqliteXcache","SQLiteOther"])
+def test_unrelated_sqlite_prefix_is_not_an_internal_table(name):
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(f"CREATE TABLE {name}(value TEXT)")
+        api = PolicyAudit(conn,domain_id="domain:a",bank="bank:a",verify_read=lambda *a,**k:None)
+        with pytest.raises(PolicyStoreError):
+            api.prepare()
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='policy_audit_state'").fetchone() is None
+        assert not conn.in_transaction
+    finally:
+        conn.close()
