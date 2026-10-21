@@ -11,6 +11,10 @@ from mnemosyne.core.policy_store import RecordKind
 from mnemosyne.runtime_context import bind_access_context
 from tests.test_policy_read import add, context, fixture as fixture
 from tests.test_policy_evidence import evidence as evidence, issue
+from tests.test_snapshot_authority import authority as authority
+from tests.test_protected_repository import repository as repository
+from tests.test_protected_session import session as session
+from tests.test_protected_snapshot import identity
 
 
 def byte_tokens(text):
@@ -240,3 +244,32 @@ def test_deferred_counter_is_rejected_before_invocation(evidence):
 
     with pytest.raises(TypeError):
         api(evidence, count)
+
+
+def test_compact_delivery_uses_guarded_session_audit_and_exact_value(session):
+    memory, audit, *_ = session
+    lease = memory.issue(RecordKind.WORKING, "w")
+    seen = []
+    receipt = CompactRecall(memory, tokenizer_id="synthetic:byte-v1", count_tokens=byte_tokens).deliver(
+        [CompactCandidate(lease)], [], seen.append, token_budget=2000)
+    decoded = json.loads(seen[0])
+    assert decoded["primary"][0]["excerpt"] == "PRIVATE-REPOSITORY-CANARY"
+    assert receipt.tokens == byte_tokens(seen[0])
+    assert audit._store.conn.execute("SELECT count(*) FROM policy_audit_events").fetchone()[0] >= 3
+
+
+def test_guarded_snapshot_change_during_packing_refuses(session, repository, evidence):
+    memory, _, _, previous, _ = session
+    lease = memory.issue(RecordKind.WORKING, "w")
+    changed = []
+    def count(wire):
+        if not changed:
+            changed.append(True)
+            repository[0].publish(evidence[0].conn, identity(generation=3),
+                previous=previous.checkpoint, operation_id="compact:change")
+        return byte_tokens(wire)
+    seen = []
+    with pytest.raises(PolicyRefusal, match="access_denied"):
+        CompactRecall(memory, tokenizer_id="synthetic:byte-v1", count_tokens=count).deliver(
+            [CompactCandidate(lease)], [], seen.append)
+    assert seen == []
