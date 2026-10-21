@@ -195,6 +195,24 @@ def test_total_timeout_closes_waiting_producer(evidence):
     assert closed == [True]
 
 
+def test_deadline_expired_at_end_of_stream_refuses_success_receipt(evidence, monkeypatch):
+    add(evidence[0],"w")
+    lease = issue(evidence)
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        original_time, offset = loop.time, [0.0]
+        monkeypatch.setattr(loop,"time",lambda:original_time()+offset[0])
+        async def producer(hits):
+            offset[0] = 1.0
+            if False:
+                yield ""
+        with pytest.raises(PolicyRefusal,match="resource_limit"):
+            await evidence[3].stream([lease],producer,lambda chunk:pytest.fail("empty"),
+                limits=EvidenceStreamLimits(timeout_seconds=0.5))
+    with bind_access_context(context()):
+        asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("where", ["producer", "consumer"])
 @pytest.mark.parametrize("error", [RuntimeError("synthetic error"), asyncio.CancelledError("synthetic cancellation")])
 def test_errors_cancel_once_and_clear_completed_payload_frames(evidence, where, error):

@@ -114,11 +114,11 @@ async def stream_evidence(evidence, leases, producer, consumer, *, limits=None):
         if get_access_context(required=True).fingerprint() != fingerprint:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         conn = evidence.reader._store.conn
-        before = (conn.total_changes, conn.execute("PRAGMA main.data_version").fetchone()[0],
-                  conn.execute("PRAGMA main.schema_version").fetchone()[0])
+        before = (conn.execute("PRAGMA main.data_version").fetchone()[0],
+                  conn.execute("PRAGMA main.schema_version").fetchone()[0], conn.total_changes)
         values = tuple(evidence.resolve(lease) for lease in leases)
-        after = (conn.total_changes, conn.execute("PRAGMA main.data_version").fetchone()[0],
-                 conn.execute("PRAGMA main.schema_version").fetchone()[0])
+        after = (conn.execute("PRAGMA main.data_version").fetchone()[0],
+                 conn.execute("PRAGMA main.schema_version").fetchone()[0], conn.total_changes)
         if before != after or conn is not evidence.reader._store.conn or conn.in_transaction:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return values
@@ -153,6 +153,8 @@ async def stream_evidence(evidence, leases, producer, consumer, *, limits=None):
                 chunk = pending.result()
             except StopAsyncIteration:
                 current()
+                if loop.time() >= deadline:
+                    raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
                 return EvidenceStreamReceipt(leases[0].scope_fingerprint, leases[0].destination,
                     leases[0].lifecycle_epoch, len(leases), chunks, total)
             pending = None
