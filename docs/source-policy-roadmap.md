@@ -2,7 +2,7 @@
 
 This is the downstream contribution roadmap for the `unixwzrd/mnemosyne` fork. It describes work in progress, not an upstream release or a deployment recommendation. Existing Mnemosyne behavior remains the default. There is no switch that safely turns the whole system into protected mode yet.
 
-For call signatures, host responsibilities, errors and an executable disposable example, start with the [policy API guide](policy-api-guide.md). Latest runtime `3dffe39` adds explicit payload-free evidence leases/reload; P3b `fefcb94` supplies durable lineage/quarantine and current epoch enforcement. Sections below retain individual historical checkpoint evidence; current progress does not make ordinary clients, plugins, adapters or restored databases protected.
+For call signatures, host responsibilities, errors and an executable disposable example, start with the [policy API guide](policy-api-guide.md). P3d runtime `d0e54b6` adds an explicitly invoked synchronous delivery gate over P3c leases/reload, retaining accepted PERF1 fingerprint reuse. P3b `fefcb94` supplies durable lineage/quarantine and current epoch enforcement. The operator resumed enhancement development after reviewing the performance checkpoint; identical bounded comparisons remain required for further runtime changes. Sections below retain individual historical checkpoint evidence; current progress does not make ordinary clients, plugins, adapters or restored databases protected.
 
 ## What We Are Building
 
@@ -98,11 +98,13 @@ S4c adds [model-bound owner import jobs](source-index-jobs-contract.md) over the
 | S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
 | S4 | S4a/S4b/S4c supply owner-mode checkpoints, atomic selection, exact durable embedding reuse and model-bound orchestration. Actual importer/provider/adapter qualification, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
 | P2 remainder | P2f/P2g qualify explicit authorized lexical/vector hybrid fusion over float32 and native int8. Historical embedding provenance, other required formats, graph/canonical/ordinary entry points, remaining guarded writes and unsupported-path refusals remain open |
-| P3 | P3a inheritance, P3b indexed durable lineage/quarantine and P3c payload-free evidence reauthorization are qualified on explicit APIs. External cache/provider/stream interception, maintenance/export/sync, content-free audit and revocation-safe restore remain open |
+| P3 | P3a inheritance, P3b indexed durable lineage/quarantine, P3c payload-free evidence reauthorization and P3d explicit synchronous trusted-consumer delivery are qualified on explicit APIs. Automatic external cache/provider/stream interception, maintenance/export/sync, content-free audit and revocation-safe restore remain open |
 | P4 | The same trusted contract through SDK, CLI, MCP, Hermes and resolvers; protected activation only after supported surfaces pass |
 | R1 | Compact token-budgeted evidence recall and authorized expansion, measuring fidelity as well as token savings |
 
 Performance changes are separate, profile-backed contributions, not speculative refactors bundled with schema or security work. Every runtime increment is compared with its preceding checkpoint using synthetic sources and disposable stores. Measures include correctness/authorized recall quality, latency, throughput, memory/index growth, embedding calls and injected tokens where the increment supports them. Small offline lexical timings do not establish semantic recall quality or an overall protected-mode overhead budget.
+
+P3d's [delivery contract](policy-delivery-contract.md) records 46 new / 217 combined cases on each Python 3.10-3.14, 1,950 selected plus two known loader skips, 759 adapter plus one pinned-host skip, 30 independent probes and exact installed controls with 165 RECORD hashes. Each explicit call reloads and reauthorizes before one trusted synchronous consumer, returns payload-free completion metadata and never retries. Consumer failure may already have external effects; a receipt is not a remote acknowledgment. Existing-operation paired timings remain close to PERF1; both initial noisy delivery tails and confirmation are retained without claiming a formal budget pass. No automatic provider hook, streaming implementation, audit log or protected activation is supplied by this method.
 
 ## Compatibility And Review
 
