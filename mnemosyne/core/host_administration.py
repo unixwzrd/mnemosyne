@@ -244,6 +244,7 @@ class ProfileAdministration:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         self._fresh(request, profile_id=plan.profile_id,
                     capabilities=frozenset({"profiles:view", "profiles:approve"}), expected=claim)
+        self._find(plan)
         approval = AdministrationApproval(plan.operation_id, plan.digest)
         pending.approval, pending.approver, pending.approval_request = approval, claim, request
         return approval
@@ -288,3 +289,5 @@ class ProfileAdministration:
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             self._fresh(pending.approval_request, profile_id=pending.plan.profile_id,
                         capabilities=frozenset({"profiles:view", "profiles:approve"}), expected=pending.approver)
+        if time.monotonic() >= pending.deadline:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)

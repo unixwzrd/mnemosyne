@@ -362,3 +362,51 @@ def test_missing_authority_never_provisions_on_read(fixture):
     with pytest.raises(PolicyRefusal):
         admin.view(proposer, "example")
     assert owner._store.conn.execute("SELECT 1 FROM sqlite_master WHERE name='host_configuration_state'").fetchone() is None
+
+
+@pytest.mark.parametrize("boundary,authentication_call", [("stage", 2), ("advance_witness", 3), ("finalize", 4)])
+@pytest.mark.parametrize("semantic", [False, True])
+def test_slow_authentication_cannot_cross_deadline_into_publication(fixture, monkeypatch, boundary, authentication_call, semantic):
+    import mnemosyne.core.host_administration as module
+    admin, owner, proposer, reviewer, _, _ = fixture
+    clock = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    plan = admin.preview(proposer, "example", profile(2, policy_version=2 if semantic else 1))
+    approval = admin.approve(reviewer, plan) if semantic else None
+    original = admin._authenticate
+    seen = [0]
+
+    def slow(request):
+        result = original(request)
+        seen[0] += 1
+        # Semantic plans check both actors at every gate. Expire inside the
+        # last valid callback, not before operation entry.
+        if seen[0] == authentication_call * (2 if semantic else 1):
+            clock[0] = 160.0
+        return result
+
+    monkeypatch.setattr(admin, "_authenticate", slow)
+    monkeypatch.setattr(owner, boundary, lambda *args, **kwargs: pytest.fail("expired publication boundary invoked"))
+    with pytest.raises(PolicyRefusal, match="access_denied"):
+        admin.apply(proposer, plan, approval=approval)
+    receipt = owner.receipt(plan.operation_id)
+    assert (receipt is None) if boundary == "stage" else receipt.phase == "prepared"
+
+
+def test_slow_approval_callback_cannot_issue_expired_approval(fixture, monkeypatch):
+    import mnemosyne.core.host_administration as module
+    admin, _, proposer, reviewer, _, _ = fixture
+    clock = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    plan = admin.preview(proposer, "example", profile(2, policy_version=2))
+    original = admin._authenticate
+
+    def slow(request):
+        result = original(request)
+        clock[0] = 160.0
+        return result
+
+    monkeypatch.setattr(admin, "_authenticate", slow)
+    with pytest.raises(PolicyRefusal, match="access_denied"):
+        admin.approve(reviewer, plan)
+    assert plan.operation_id not in admin._pending
