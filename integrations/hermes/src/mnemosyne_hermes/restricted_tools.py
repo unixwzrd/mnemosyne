@@ -107,10 +107,11 @@ class RestrictedMemoryTools:
             text = json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
             if len(text) > 65536:
                 raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
-            self._binding.load_snapshot(self._handle)
             output.append(text)
 
         self._adapter.invoke(self._handle, operation, intent, consume)
+        # Encoding is trusted local work, not another egress. Gate its completed
+        # result after the adapter/session unwinds, immediately before returning.
         self._binding.load_snapshot(self._handle)
         if len(output) != 1:
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)

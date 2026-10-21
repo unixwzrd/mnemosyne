@@ -103,6 +103,37 @@ def test_registry_revocation_fences_existing_tools(tools, registered):
         tools.invoke("protected_memory_get", {"kind": "working_memory", "record_id": "w"})
 
 
+@pytest.mark.parametrize("record_id", ["w", "missing"])
+def test_revocation_during_serialization_prevents_return(tools, registered, monkeypatch, record_id):
+    import mnemosyne_hermes.restricted_tools as module
+    _, _, _, owner, registry, profile, _ = registered
+    original = json.dumps
+    revoked = []
+    def encode(value, *args, **kwargs):
+        text = original(value, *args, **kwargs)
+        if type(value) is dict and set(value) == {"found", "memory"}:
+            revoked.append(True)
+            owner.publish((profile,), previous=owner.current().revision, operation_id="revoke-encoding",
+                          registry=replace(registry, grants=()))
+        return text
+    monkeypatch.setattr(module.json, "dumps", encode)
+    with pytest.raises(PolicyRefusal):
+        tools.invoke("protected_memory_get", {"kind": "working_memory", "record_id": record_id})
+    assert revoked == [True]
+
+
+def test_revocation_after_adapter_unwinds_prevents_return(tools, registered, monkeypatch):
+    _, adapter, _, owner, registry, profile, _ = registered
+    original = adapter.invoke
+    def invoke(*args, **kwargs):
+        original(*args, **kwargs)
+        owner.publish((profile,), previous=owner.current().revision, operation_id="revoke-after-adapter",
+                      registry=replace(registry, grants=()))
+    monkeypatch.setattr(adapter, "invoke", invoke)
+    with pytest.raises(PolicyRefusal):
+        tools.invoke("protected_memory_get", {"kind": "working_memory", "record_id": "w"})
+
+
 def test_unrelated_adapter_cannot_mix_authorities(registered):
     binding, adapter, request, *_ = registered
     handle = binding.admit(request)
