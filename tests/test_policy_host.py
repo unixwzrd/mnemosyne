@@ -10,7 +10,7 @@ from mnemosyne.core.policy_host import (
     ParticipantGrant,
     ProtectedHostAdapter,
 )
-from mnemosyne.runtime_context import bind_access_context, get_access_context
+from mnemosyne.runtime_context import get_access_context
 from tests.test_policy_read import context, fixture as fixture
 from tests.test_policy_evidence import evidence as evidence
 from tests.test_snapshot_authority import authority as authority
