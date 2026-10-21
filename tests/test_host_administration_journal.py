@@ -503,3 +503,34 @@ def test_recovery_cannot_witness_observation_downgrade(audited):
     with pytest.raises(PolicyRefusal):
         journal.recover()
     assert journal._witness.current(journal._journal_id) == before
+
+
+def test_reference_is_revalidated_after_witness_before_local_finalize(audited, monkeypatch):
+    fixture, journal, _, _, conn, _ = audited
+    admin, owner, *_ = fixture
+    intent = intent_for(fixture)
+    journal.append_intent(intent, owner=owner)
+    pending = admin._pending[intent.operation_id]
+    candidate = admin._candidate(owner.current(), (pending.plan.principal_id, pending.plan.store_id), pending.plan.replacement)
+    owner.stage(candidate.profiles, previous=intent.previous, operation_id=intent.operation_id, registry=candidate.registry)
+    publish = journal._witness.publish
+
+    def corrupt_after_witness(*args, **kwargs):
+        result = publish(*args, **kwargs)
+        data = json.loads(conn.execute("SELECT payload FROM administration_journal_events WHERE sequence=1").fetchone()[0])
+        data["body"]["intent"]["proposer"]["principal_id"] = "changed-at-finalization"
+        payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+        conn.execute("DROP TRIGGER administration_journal_finalize_only")
+        conn.execute("UPDATE administration_journal_events SET payload=?,digest=? WHERE sequence=1",
+                     (payload, hashlib.sha256(payload).hexdigest()))
+        conn.execute(_DDL["administration_journal_finalize_only"])
+        conn.commit()
+        return result
+
+    monkeypatch.setattr(journal._witness, "publish", corrupt_after_witness)
+    with pytest.raises(PolicyRefusal):
+        journal.observe(intent.operation_id, owner=owner)
+    assert conn.execute("SELECT publication_state FROM administration_journal_events WHERE sequence=2").fetchone() == ("prepared",)
+    assert owner.receipt(intent.operation_id).phase == "prepared"
+    with pytest.raises(PolicyRefusal):
+        journal.recover()

@@ -227,6 +227,8 @@ class AdministrationJournal:
         with self._store._transaction():
             row, checkpoint = self._head(allow_prepared=True)
             if row is None or row[3] == "committed":
+                if row is not None:
+                    self._anchored(row)
                 return None if row is None else row[0]
             self._reference(row)
             prior = self._row(sequence=row[0].sequence - 1) if row[0].sequence > 1 else None
@@ -242,6 +244,7 @@ class AdministrationJournal:
             head, actual = self._head(allow_prepared=True)
             if head != row or actual != checkpoint or self._witness.current(self._journal_id) != checkpoint:
                 raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
+            self._reference(head)
             self._store.conn.execute("UPDATE main.administration_journal_events SET publication_state='committed' WHERE sequence=?",
                                      (row[0].sequence,))
         return row[0]
