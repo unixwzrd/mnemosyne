@@ -8,6 +8,19 @@ Bank selection chooses the database; the explicit policy API selects eligible re
 
 Source originals stay external. Policy source metadata and evidence leases do not contain original files or fetch them. Explicit [source expansion](source-expansion-contract.md) separately reauthorizes and verifies exact bytes. Keep embedding model identity/dimensions/preprocessing unchanged unless a separately qualified index operation changes them.
 
+```mermaid
+flowchart LR
+    H[Trusted host context] --> P[Pinned authorization]
+    P --> Q[Indexed eligible records]
+    Q --> R[Authorized native read]
+    R --> L[Payload-free lease]
+    L --> A[Fresh authorization and reload]
+    A --> V[Exact scope and value check]
+    V --> U[Fresh result for immediate use]
+```
+
+This diagram is the explicit API path only. A lease never bypasses the indexed reader and is never supplied directly to a model as authorization.
+
 ## Run The Complete Synthetic Example
 
 From the exact contribution checkout or an environment with its exact wheel installed:
@@ -57,6 +70,8 @@ Its `verify_fixture` is deliberately synthetic. Do not copy it into an authentic
 
 `RecordKind` covers working, episodic and canonical native records plus source revisions. Source revisions use the dedicated metadata API, not generic `reader.get`. Existing explicit lexical/vector/hybrid methods are documented in [lexical](policy-lexical-contract.md), [vector](policy-vector-contract.md) and [hybrid](policy-hybrid-contract.md) contracts. Native vector recall accepts a caller-supplied embedding and exact model identity; it does not silently invoke a provider. Native float32 and int8 are supported; unknown formats refuse. Do not replace ordinary recall with the explicit API without completing its surrounding adapter contract.
 
+Import APIs from their defining modules as shown in the example, not an invented top-level SDK export. `EvidenceLease(record_kind, record_id, binding_id, bank, destination, projects, lifecycle_epoch, scope_fingerprint, value_fingerprint)` has no content or locator field. A resolved native `AuthorizedMemory` adds current `content` to identity/provenance; `AuthorizedSourceRevision` instead adds asset/digest/representation/byte-size assertion metadata. Read provenance includes bank, binding, policy ID/version/classification, current decision ID, context ID/epoch and lifecycle epoch. A lifecycle receipt contains `epoch`, `status` and `transaction_state`; `pending` needs the owner's commit. Result representations omit fields, but explicit serialization is not automatically privacy-safe.
+
 Authenticated creation uses `PolicyWriter` and request-bound `MemoryWriteIntent`/`MemoryWriteGrant`, documented in [guarded creation](policy-write-contract.md). It creates native text, FTS and immutable policy atomically, not embeddings or enrichment. It does not silently deduplicate, update, reclassify or delete existing records. Owner-mode `store.bind` is not a substitute for that write grant.
 
 ## Trusted Verifier Contract
@@ -80,6 +95,8 @@ Preparation, binding and quarantine can join owner transactions and return pendi
 Absent classification normalizes to `unclassified` only through the explicit [normalization helper](policy-derivation-contract.md) and only if that vocabulary defines it. It never grants public access or overrides stricter inheritance. Invalid explicit labels refuse; existing rows are not automatically migrated. Different owner/tenant conjunctions that cannot be safely represented refuse during inheritance.
 
 Catch `PolicyRefusal` and inspect its fixed `reason` value; do not include denied IDs, labels, payloads or arbitrary exception text in public diagnostics. `PolicyStoreError` distinguishes `unprepared` and `incompatible`; it is not permission to repair a protected marker or fall back to legacy. Real I/O/locking errors remain failures. Cancellation propagates as its original exception while completed payload frames are cleared; this is not forensic memory erasure or complete timing-side-channel protection.
+
+The refusal vocabulary is `missing_context`, `policy_mismatch`, `invalid_selection`, `unsupported_surface`, `access_denied`, `context_unavailable` and `resource_limit`. Source expansion separately uses `changed`, `missing`, `inaccessible`, `unavailable`, `unverified` and `limit_exceeded`; it defaults to 65,536 transient bytes and caps at 1,048,576. These statuses do not authorize retry in a different bank, source revision or legacy mode. Source metadata and bytes are different operations with different results.
 
 ## Compatibility And Acceptance
 

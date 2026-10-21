@@ -2,6 +2,8 @@
 
 This is the downstream contribution roadmap for the `unixwzrd/mnemosyne` fork. It describes work in progress, not an upstream release or a deployment recommendation. Existing Mnemosyne behavior remains the default. There is no switch that safely turns the whole system into protected mode yet.
 
+For call signatures, host responsibilities, errors and an executable disposable example, start with the [policy API guide](policy-api-guide.md). Latest runtime `3dffe39` adds explicit payload-free evidence leases/reload; P3b `fefcb94` supplies durable lineage/quarantine and current epoch enforcement. Sections below retain individual historical checkpoint evidence; current progress does not make ordinary clients, plugins, adapters or restored databases protected.
+
 ## What We Are Building
 
 Keep original documents and media in their existing authoritative repositories. Mnemosyne should retain compact memories, bounded evidence, search indexes and references to those originals, with revision/checksum lineage so a changed, moved or unavailable source is not mistaken for the evidence originally indexed. Ordinary recall should not fetch source documents. Authorized expansion is a separate, explicit operation.
@@ -96,7 +98,7 @@ S4c adds [model-bound owner import jobs](source-index-jobs-contract.md) over the
 | S3 | S3a admission and S3b durable owner-mode catalogue are qualified; source-wide enforcement across other enabled writers/derivatives and complete B1 sidecar evidence remain outstanding. Full-source lexical coverage is explicitly unsupported, not simulated with hidden stored text |
 | S4 | S4a/S4b/S4c supply owner-mode checkpoints, atomic selection, exact durable embedding reuse and model-bound orchestration. Actual importer/provider/adapter qualification, policy-aware derivative invalidation and complete A13/A14 evidence remain outstanding |
 | P2 remainder | P2f/P2g qualify explicit authorized lexical/vector hybrid fusion over float32 and native int8. Historical embedding provenance, other required formats, graph/canonical/ordinary entry points, remaining guarded writes and unsupported-path refusals remain open |
-| P3 | P3a supplies pure conservative inheritance and explicit absent-classification normalization; durable indexed lineage, quarantine/revocation, cache invalidation, maintenance/export/sync restrictions and content-free audit remain open |
+| P3 | P3a inheritance, P3b indexed durable lineage/quarantine and P3c payload-free evidence reauthorization are qualified on explicit APIs. External cache/provider/stream interception, maintenance/export/sync, content-free audit and revocation-safe restore remain open |
 | P4 | The same trusted contract through SDK, CLI, MCP, Hermes and resolvers; protected activation only after supported surfaces pass |
 | R1 | Compact token-budgeted evidence recall and authorized expansion, measuring fidelity as well as token savings |
 

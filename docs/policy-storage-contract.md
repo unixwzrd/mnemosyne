@@ -1,5 +1,7 @@
 # Prepared Policy Catalog: P1b Candidate
 
+This preserves P1b's original contribution boundary and historical evidence. Current optional v2 lifecycle and source-revision interfaces are documented in the [API guide](policy-api-guide.md), [source policy](source-policy-contract.md) and [lifecycle contract](policy-lifecycle-contract.md); P1b's original three-kind list is not the current complete enum. No catalog here activates store-wide protection.
+
 Status: provisional downstream contract, October 19, 2026, based on P1a `ffc8416ffd9b1bf7c9ee6f46b2c51eddb77ad10f`. This adds optional indexed metadata and a durable preparation marker, not protected operation or activation. No upstream architecture approval, release, migration of live data or deployment is claimed. Definitions and bindings are owner-mode metadata APIs, not authorized recall APIs.
 
 ## Interface And Schema
