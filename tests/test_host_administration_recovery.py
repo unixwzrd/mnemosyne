@@ -43,19 +43,25 @@ def test_profile_grant_route_sequence_preserves_restriction_and_fences_each_old_
     loader, request, state = binding(owner)
     handle = loader.admit(request)
     assert loader.load_snapshot(handle).effective()[0].classification_ceiling == "L1"
+    original_profiles = owner.current().profiles
     profile_fixture = profiles.__wrapped__(audited)
     profile_apply(profile_fixture, profile_preview(profile_fixture))
+    accepted_profiles = owner.current().profiles
+    assert accepted_profiles != original_profiles
+    assert accepted_profiles[0].levels[0].user_label == "Chosen label"
     with pytest.raises(PolicyRefusal):
         loader.load_snapshot(handle)
     handle = loader.admit(request)
     assert loader.load_snapshot(handle).effective()[0].classification_ceiling == "L1"
     plan, receipt = restrict(audited)
+    assert owner.current().profiles == accepted_profiles
     with pytest.raises(PolicyRefusal):
         loader.load_snapshot(handle)
     handle = loader.admit(request)
     assert loader.load_snapshot(handle).effective()[0].classification_ceiling == "L0"
     registry_fixture = managed.__wrapped__(audited)
     registry_apply(registry_fixture, registry_change(registry_fixture, "destinations"))
+    assert owner.current().profiles == accepted_profiles
     with pytest.raises(PolicyRefusal):
         loader.load_snapshot(handle)
     with pytest.raises(PolicyRefusal):
