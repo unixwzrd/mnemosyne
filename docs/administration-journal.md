@@ -52,6 +52,22 @@ Restoring the journal alone or its witness alone fences inconsistent history. Co
 
 ## Separate Reader Authorization
 
+## Composed Recovery Qualification
+
+The disposable `tests/test_host_administration_recovery.py` suite composes profile, grant and registry changes with fresh request binding and four-file recovery. It verifies that profile edits and subsequent grant restrictions remain intact across later route revisions; every old request handle fences, and the host must authenticate the matching fresh route. An unmapped newly joined participant refuses and cannot reuse the old handle. This is native policy/request admission evidence, not proof of a clean provider context, cancelled output or UI/history isolation.
+
+Restoring only configuration or its independent witness fences configuration admission. Restoring only the administrative journal or its witness fences audit access and further journaled writes, without undoing a separately witnessed grant restriction. The test restores actual disposable SQLite backup images, including historical state; it does not edit state flags or point at live databases. Restoring all independent anchors together remains outside the surviving-anchor guarantee and is not called a passed freshness test.
+
+For all three administrative intent types, journal-only recovery finalizes only the exact metadata tail and never stages a configuration proposal. When the configuration witness advanced but local finalization did not, journal recovery alone cannot repair it: separately authorized `owner.recover(operation_id)` must finalize that witnessed configuration, followed by explicit `journal.observe(operation_id, owner=owner)`. Neither operation replays a consumed administration plan. No automatic recovery loop, downgrade, reindex or service restart occurs.
+
+### Unwitnessed Preparation Decision
+
+An existing owner boundary remains open: after configuration staging succeeds but witness advancement does not happen, `owner.recover(operation_id)` deliberately returns the inert `prepared` receipt rather than authorizing it. The prior witnessed configuration remains readable. The durable prepared row also blocks a different successor; a fresh facade preview cannot overwrite it. There is no current `abort`/`abandon` operation. The composed regression verifies this actual state instead of pretending receipt inspection resolves it. This is an existing owner-state-machine limitation, not a new profile/registry regression.
+
+Finishing this recovery path requires an explicit design choice: add a separately authorized and durably attributed cancellation/replacement contract, with new storage/witness and interrupted-migration qualification, or retain the current format and require separately controlled new-authority recovery. Do not silently delete/overwrite the prepared row, advance an obsolete proposal merely to unblock writes, reset its authority epoch, or claim cancellation is already implemented. Neither choice changes production without a separate deployment decision.
+
+## Journal Reader Contract
+
 `read(authenticated_request, destination=..., after_sequence=0, limit=100)` requires an exact current `AdministrationJournalRead` from the trusted synchronous read authenticator. It names the issuer/principal, whole configuration authority and journal, destination, administrative authorization revision/epoch and only `admin-journal:read`. Ordinary `grants:view`, profile capabilities, content clearances and content-decision `audit:read` do not supply this permission.
 
 Authentication occurs before journal SQL and is rechecked after page materialization and immediately before returning. Changed claims, revoked access, wrong destination/authority/journal, foreign process/thread and reentry refuse with content-free errors. Pages are bounded to 1,000 events and contain only explicitly authorized administrative metadata. This is whole-journal authority, not an unimplemented per-store filter; authorized readers can see identifiers, counts and global activity. Constant-time confidentiality, real transport authentication and output routing are separate host qualifications.
