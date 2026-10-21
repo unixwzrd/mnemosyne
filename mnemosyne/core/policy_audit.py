@@ -18,7 +18,7 @@ from ..runtime_context import get_access_context
 MAX_EVENT_BYTES = 65536
 MAX_EVENTS = 16384
 _OPERATIONS = {
-    PolicySurface.DIRECT: {"get", "candidates", "source_metadata", "issue", "resolve"},
+    PolicySurface.DIRECT: {"get", "candidates", "source_metadata", "issue", "resolve", "dispatch"},
     PolicySurface.LEXICAL: {"lexical"}, PolicySurface.VECTOR: {"vector"}, PolicySurface.HYBRID: {"hybrid"},
     PolicySurface.WRITE: {"create"}, PolicySurface.DERIVE: {"derive"}, PolicySurface.EXPAND: {"expand"},
     PolicySurface.INJECT: {"deliver", "stream"}, PolicySurface.CACHE: {"resolve"},

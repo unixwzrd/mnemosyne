@@ -124,7 +124,10 @@ def test_unsupported_operations_never_fall_back(session, operation):
     with pytest.raises(PolicyRefusal, match="unsupported_surface"):
         api.dispatch(operation)
     assert api._conn.total_changes == before
-    assert not events(audit)
+    recorded, = events(audit)
+    assert recorded["result"] == "deny" and recorded["operation"] == "dispatch"
+    assert recorded["reason"] == "unsupported_surface"
+    assert recorded["requested"] == recorded["returned"] == []
 
 
 def test_stale_generation_refuses_all_reuse_without_reopening(
