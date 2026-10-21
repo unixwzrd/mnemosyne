@@ -162,11 +162,22 @@ class AccessContext:
     def fingerprint(self) -> str:
         """Deterministic cache-key ingredient, not an access decision or secret."""
         values = {f.name: getattr(self, f.name) for f in fields(self)}
+        original = tuple(values.values())
+        cached = self.__dict__.get("_policy_fingerprint_cache") if type(self) is AccessContext else None
+        if (cached is not None and cached[0] == POLICY_CONTRACT_VERSION and len(original) == len(cached[1])
+            and all(current is previous for current, previous in zip(original, cached[1]))):
+            return cached[2]
         for name, value in values.items():
             if isinstance(value, frozenset):
                 values[name] = sorted(value)
         encoded = json.dumps([POLICY_CONTRACT_VERSION, values], sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        if type(self) is AccessContext and all(
+            type(value) in (str, int, type(None))
+            or (type(value) is frozenset and all(type(item) is str for item in value)) for value in original
+        ):
+            object.__setattr__(self, "_policy_fingerprint_cache", (POLICY_CONTRACT_VERSION, original, digest))
+        return digest
 
 
 @dataclass(frozen=True, repr=False)
