@@ -248,6 +248,8 @@ class ProtectedHostAdapter:
                 raise
             except Exception:
                 raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE) from None
+            if inspect.iscoroutine(resolved) or inspect.isgenerator(resolved):
+                resolved.close()
             if type(resolved) is not tuple or len(resolved) != 2:
                 raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             repository, audit = resolved

@@ -1,6 +1,7 @@
 """Atomic synthetic host snapshots; no live adapter identities or banks."""
 
 from dataclasses import replace
+import inspect
 
 import pytest
 
@@ -305,3 +306,40 @@ def test_unsupported_frontend_operations_never_reach_consumer(host, operation):
         host[0].invoke(
             host[1], operation, {}, lambda _: pytest.fail("unsupported output")
         )
+
+
+@pytest.mark.parametrize("kind", ["coroutine", "generator"])
+def test_unexpected_deferred_registry_result_is_closed_without_execution(
+    host, repository, kind, monkeypatch
+):
+    bodies = []
+
+    async def deferred():
+        bodies.append(True)
+
+    def generator():
+        bodies.append(True)
+        yield None
+
+    result = deferred() if kind == "coroutine" else generator()
+    adapter = ProtectedHostAdapter(
+        adapter_id="synthetic",
+        issuer="test-host",
+        load_snapshot=lambda request: host[2]["snapshot"],
+        resolve_store=lambda store_id: result,
+    )
+    monkeypatch.setattr(
+        repository[0],
+        "open_current",
+        lambda *a: pytest.fail("invalid registry opened plaintext"),
+    )
+    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
+        adapter.invoke(
+            host[1], "get", {"kind": "working_memory", "record_id": "w"}, lambda _: None
+        )
+    assert not bodies
+    assert (
+        inspect.getcoroutinestate(result)
+        if kind == "coroutine"
+        else inspect.getgeneratorstate(result)
+    ) == (inspect.CORO_CLOSED if kind == "coroutine" else inspect.GEN_CLOSED)
