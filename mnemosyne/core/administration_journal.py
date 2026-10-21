@@ -11,7 +11,8 @@ import stat
 import threading
 
 from .administration_audit_contract import (
-    AdministrationIntent, AdministrationJournalRead, AdministrationJournalRecord, _digest, _revision,
+    AdministrationIntent, RegistryAdministrationIntent, AdministrationJournalRead, AdministrationJournalRecord,
+    _digest, _intent, _revision,
 )
 from .host_administration import _entry
 from .host_configuration import HostConfigurationAuthority, _canonical
@@ -175,7 +176,7 @@ class AdministrationJournal:
             candidate = _revision(body["candidate"])
             if candidate.authority_id != self._authority_id:
                 raise ValueError("foreign candidate authority")
-            intent = AdministrationIntent.from_dict(body["intent"]) if kind == "intent" else None
+            intent = _intent(body["intent"]) if kind == "intent" else None
             if intent is not None and (intent.operation_id != operation or intent.candidate != candidate):
                 raise ValueError("intent mismatch")
             intent_digest = digest if intent is not None else _digest(body["intent_sha256"])
@@ -296,7 +297,7 @@ class AdministrationJournal:
     @_entry
     def append_intent(self, intent, *, owner):
         self._ready(write=True)
-        if type(intent) is not AdministrationIntent or self._owner(owner).revision != intent.previous:
+        if type(intent) not in (AdministrationIntent, RegistryAdministrationIntent) or self._owner(owner).revision != intent.previous:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return self._append({"authority_id": self._authority_id, "journal_id": self._journal_id,
             "operation_id": intent.operation_id, "kind": "intent", "candidate": asdict(intent.candidate), "intent": intent.to_dict()})

@@ -18,6 +18,22 @@ def _revision(data):
     return ConfigurationRevision(**_exact_dict(data, {"authority_id", "generation", "sha256"}, "revision"))
 
 
+def _intent_fields(intent):
+    _bounded_text(intent.operation_id, "operation_id", 128)
+    _digest(intent.plan_sha256)
+    if (type(intent.previous) is not ConfigurationRevision or type(intent.candidate) is not ConfigurationRevision
+            or intent.previous.authority_id != intent.candidate.authority_id
+            or intent.candidate.generation != intent.previous.generation + 1):
+        raise ValueError("exact same-authority successor required")
+    if (type(intent.proposer) is not AdministrativeActor or type(intent.approver) is not AdministrativeActor
+            or intent.proposer.issuer != intent.approver.issuer
+            or intent.proposer.principal_id == intent.approver.principal_id
+            or intent.proposer.separation_id == intent.approver.separation_id
+            or intent.proposer.epoch != intent.approver.epoch
+            or intent.proposer.authorization_revision != intent.approver.authorization_revision):
+        raise ValueError("distinct same-epoch administrative actors required")
+
+
 @dataclass(frozen=True, repr=False)
 class AdministrativeActor:
     issuer: str
@@ -51,21 +67,9 @@ class AdministrationIntent:
     approver: AdministrativeActor
 
     def __post_init__(self):
-        _bounded_text(self.operation_id, "operation_id", 128)
+        _intent_fields(self)
         _bounded_text(self.principal_id, "principal_id", 128)
         _store_id(self.store_id)
-        _digest(self.plan_sha256)
-        if (type(self.previous) is not ConfigurationRevision or type(self.candidate) is not ConfigurationRevision
-                or self.previous.authority_id != self.candidate.authority_id
-                or self.candidate.generation != self.previous.generation + 1):
-            raise ValueError("exact same-authority successor required")
-        if (type(self.proposer) is not AdministrativeActor or type(self.approver) is not AdministrativeActor
-                or self.proposer.issuer != self.approver.issuer
-                or self.proposer.principal_id == self.approver.principal_id
-                or self.proposer.separation_id == self.approver.separation_id
-                or self.proposer.epoch != self.approver.epoch
-                or self.proposer.authorization_revision != self.approver.authorization_revision):
-            raise ValueError("distinct same-epoch administrative actors required")
 
     def to_dict(self):
         return asdict(self)
@@ -78,6 +82,45 @@ class AdministrationIntent:
         for name in ("proposer", "approver"):
             values[name] = AdministrativeActor.from_dict(values[name])
         return cls(**values)
+
+
+@dataclass(frozen=True, repr=False)
+class RegistryAdministrationIntent:
+    operation_id: str
+    plan_sha256: str
+    previous: ConfigurationRevision
+    candidate: ConfigurationRevision
+    target_kind: str
+    target_id: str
+    proposer: AdministrativeActor
+    approver: AdministrativeActor
+
+    def __post_init__(self):
+        _intent_fields(self)
+        if type(self.target_kind) is not str or self.target_kind not in ("principals", "stores", "destinations", "conversations"):
+            raise ValueError("supported registry target required")
+        _bounded_text(self.target_id, "target_id", 128)
+        if self.target_kind == "stores":
+            _store_id(self.target_id)
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        values = dict(_exact_dict(data, set(cls.__dataclass_fields__), "registry administrative intent"))
+        for name in ("previous", "candidate"):
+            values[name] = _revision(values[name])
+        for name in ("proposer", "approver"):
+            values[name] = AdministrativeActor.from_dict(values[name])
+        return cls(**values)
+
+
+def _intent(data):
+    if type(data) is not dict:
+        raise TypeError("exact intent object required")
+    cls = RegistryAdministrationIntent if "target_kind" in data else AdministrationIntent
+    return cls.from_dict(data)
 
 
 @dataclass(frozen=True, repr=False)
@@ -112,4 +155,4 @@ class AdministrationJournalRecord:
     kind: str
     candidate: ConfigurationRevision
     intent_sha256: str
-    intent: AdministrationIntent | None
+    intent: AdministrationIntent | RegistryAdministrationIntent | None
