@@ -1,6 +1,6 @@
 # Scoped Profile Administration
 
-This additive API builds on the explicit owner-only [profile history](host-configuration-authority.md). It does not implement a principal/grant registry, authenticate a real CLI/Hermes/MCP transport, grant memory access, activate protected mode or change legacy behavior. All examples use disposable metadata, not an installed configuration loader. No original documents, model calls or private stores are involved.
+This additive API builds on the explicit owner-only [profile history](host-configuration-authority.md). It can edit profiles in both profile-only and [registry-bearing configurations](host-authorization-registry.md), but cannot edit that registry. It does not authenticate a real CLI/Hermes/MCP transport, grant memory access, activate protected mode or change legacy behavior. All examples use disposable metadata, not an installed configuration loader. No original documents, model calls or private stores are involved.
 
 ## Trust And Separation
 
@@ -19,6 +19,16 @@ The only admitted capabilities are `profiles:view`, `profiles:labels`, `profiles
 5. `cancel(exact_plan)` discards that local pending handle without writing. It is not authority revocation. Up to 64 pending plans are admitted for a configurable 1-300 seconds (default 60); expiration is based on process monotonic time. Expired plans are removed on access. Plans/approvals are not serializable credentials or durable receipts and must not enter model history/logs.
 
 Preview validates the candidate's structural bounds and current policy consistency. The owner still checks immutable historical profile/policy versions when staging, so preview is not a promise that a conflicting historical version can be committed. Creation of an empty authority and provisioning its first committed configuration remain explicit owner operations, not administrative auto-provisioning.
+
+### Profiles With An Existing Registry
+
+No new method, argument or capability is required. `view`, `preview`, `approve` and `apply` retain the same scoped workflow when the current owner snapshot contains a registry. Preview validates the complete candidate profile set against that exact registry. Apply preserves its canonical metadata unchanged in the same witnessed revision as the profile update; it never reconstructs grants from administrator claims or accepts a replacement registry. Even an empty registry remains a version-2 configuration rather than downgrading to legacy profile-only format.
+
+Removing a profile referenced by a store, or removing a classification used by a conversation/grant, refuses at preview without a write. Removing an unused profile remains a semantic change requiring independent approval. Changing policy identity/version or ordered levels likewise requires independent approval, even if all existing classification names remain valid: reordering can change the meaning of existing ceilings. Display-only permission cannot authorize such a change.
+
+Any intervening configuration publication, including a grant/route/identity change by the separately trusted owner, invalidates the preview; the facade cannot restore its prior registry. A successful profile edit advances the global configuration generation and invalidates existing request bindings, including for label-only edits. Obtain a fresh authenticated request handle; do not reuse old evidence or model context merely because grants were unchanged. This conservative global invalidation is intentional, not a per-profile optimization.
+
+The trusted administrative authentication callback remains independent from registry content grants. Neither a registry entry nor permission to change display labels authenticates an administrator, and configuration capabilities do not grant data access. Scoped principal/grant/route administration is still unsupported. No new storage schema, migration, source retrieval, embedding call, regulatory evaluator or automatic host activation is introduced.
 
 ## Interruption And Recovery
 

@@ -266,16 +266,19 @@ def test_aggregate_payload_budget_refuses_before_publication(authority):
     assert witness.execute("SELECT count(*) FROM snapshot_publications").fetchone() == (0,)
 
 
-def test_profile_only_facade_cannot_strip_or_change_registry(authority):
+def test_profile_facade_preserves_registry_when_updating_labels(authority):
     api, _, _ = authority
     initial = api.publish((profile(),), previous=None, operation_id="initial", registry=registry())
     claim = AdministrationSnapshot("login", "admin", "admin-actor", "a" * 32, "d" * 64,
         1, frozenset({"example"}), frozenset({"profiles:view", "profiles:labels"}))
     admin = ProfileAdministration(api, authority_id="a" * 32, issuer="login", authenticate=lambda _: claim)
     assert admin.view(object(), "example").profile == profile()
-    with pytest.raises(PolicyRefusal, match="unsupported_surface"):
-        admin.preview(object(), "example", replace(profile(), version=2))
-    assert api.current().revision == initial.revision and api.current().registry == registry()
+    request = object()
+    plan = admin.preview(request, "example", replace(profile(), version=2))
+    assert api.current().revision == initial.revision
+    assert admin.apply(request, plan).phase == "committed"
+    assert api.current().registry == registry()
+    assert api.current().profiles == (replace(profile(), version=2),)
 
 
 def test_import_budget_stops_before_deserializing_the_remaining_grants(monkeypatch):

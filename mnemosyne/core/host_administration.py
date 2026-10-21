@@ -206,15 +206,13 @@ class ProfileAdministration:
         claim = self._fresh(request, profile_id=profile_id, capabilities=frozenset({"profiles:view"}))
         current = self._current()
         prior = next((p for p in current.profiles if p.profile_id == profile_id), None)
-        if current.registry is not None:
-            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         if replacement == prior or (prior is not None and replacement is not None and replacement.version <= prior.version):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         kind = "labels" if prior is not None and replacement is not None and replacement.policy == prior.policy else "policy"
         profiles = tuple(p for p in current.profiles if p.profile_id != profile_id)
         if replacement is not None:
             profiles += (replacement,)
-        candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles)
+        candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry)
         self._fresh(request, profile_id=profile_id,
                     capabilities=frozenset({"profiles:view", "profiles:" + kind}), expected=claim)
         self._expire()
@@ -273,7 +271,8 @@ class ProfileAdministration:
         # Consume before the first write: uncertain writes require owner receipt
         # inspection, never an automatic resend through this facade.
         del self._pending[plan.operation_id]
-        receipt = self._owner.stage(profiles, previous=plan.previous, operation_id=plan.operation_id)
+        receipt = self._owner.stage(profiles, previous=plan.previous, operation_id=plan.operation_id,
+                                    registry=current.registry)
         self._admit_after_stage(request, pending)
         self._owner.advance_witness(receipt)
         self._admit_after_stage(request, pending)
