@@ -56,6 +56,9 @@ def main():
             with bind_access_context(context):
                 lease = api.issue(RecordKind.WORKING, "derived-note", destination="destination:example")
                 resolved = api.resolve(lease)
+                delivered = []
+                delivery = api.deliver(lease, lambda hit: delivered.append(hit.record_id))
+                assert delivered == ["derived-note"] and delivery.lease == lease
             assert resolved.content == "Synthetic derived conclusion"
             receipt = lifecycle.quarantine(parent)
             with bind_access_context(context):

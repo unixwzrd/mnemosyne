@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass
 import hashlib
+import inspect
 import json
 
 from .policy import PolicyRefusal, RefusalReason, _number, _text
@@ -57,6 +58,23 @@ class EvidenceLease:
         _sha256(self.value_fingerprint)
 
 
+@dataclass(frozen=True, repr=False)
+class EvidenceDeliveryReceipt:
+    """Sensitive completion metadata; neither a payload nor a bearer grant."""
+
+    lease: EvidenceLease
+    decision_id: str
+    context_id: str
+    context_epoch: int
+
+    def __post_init__(self):
+        if type(self.lease) is not EvidenceLease:
+            raise TypeError("lease must be an EvidenceLease")
+        _text(self.decision_id, "decision_id")
+        _text(self.context_id, "context_id")
+        _number(self.context_epoch, "context_epoch", minimum=0)
+
+
 class PolicyEvidence:
     """Explicit v2 lease/reload boundary; no cached payloads or provider calls."""
 
@@ -73,6 +91,26 @@ class PolicyEvidence:
         if type(lease) is not EvidenceLease:
             raise TypeError("lease must be an EvidenceLease")
         return self._read(lease.record_kind, lease.record_id, destination=lease.destination, projects=lease.projects, lease=lease)
+
+    @_guard_policy_output
+    def deliver(self, lease, consumer):
+        """Freshly resolve immediately before one trusted synchronous consumer.
+
+        No retries or atomic external-delivery promise. A callback that fails or
+        returns deferred work may already have had effects; never blindly resend.
+        """
+        deferred = (inspect.iscoroutinefunction, inspect.isasyncgenfunction, inspect.isgeneratorfunction)
+        if not callable(consumer) or any(check(target) for check in deferred
+            for target in (consumer, getattr(consumer, "__call__", None))):
+            raise TypeError("consumer must be synchronous and return None")
+        hit = self.resolve(lease)
+        receipt = EvidenceDeliveryReceipt(lease, hit.decision_id, hit.context_id, hit.context_epoch)
+        result = consumer(hit)
+        if result is not None:
+            if inspect.iscoroutine(result) or inspect.isgenerator(result):
+                result.close()
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        return receipt
 
     @_guard_policy_output
     def _read(self, kind, record_id, *, destination, projects, lease):

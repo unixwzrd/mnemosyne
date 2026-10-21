@@ -67,6 +67,7 @@ Its `verify_fixture` is deliberately synthetic. Do not copy it into an authentic
 | `reader.get_source_revision(revision_id, *, destination)` | Exact authorized source metadata; requires `read:bank` and `read:source-revision`, no project selection, locator or bytes |
 | `PolicyEvidence(reader).issue(kind, record_id, *, destination, projects=None)` | New authorized read producing a payload-free lease. V2 only; caller transactions refuse |
 | `evidence.resolve(lease)` | Fresh authorization plus native reload, exact scope/epoch/binding/value comparison and final checkpoint. Does not return an old cached payload |
+| `evidence.deliver(lease, consumer)` | Resolve immediately before invoking one trusted synchronous `consumer(result)` returning `None`. Returns payload-free completion metadata; no retries, remote-delivery guarantee or stream integration |
 
 `RecordKind` covers working, episodic and canonical native records plus source revisions. Source revisions use the dedicated metadata API, not generic `reader.get`. Existing explicit lexical/vector/hybrid methods are documented in [lexical](policy-lexical-contract.md), [vector](policy-vector-contract.md) and [hybrid](policy-hybrid-contract.md) contracts. Native vector recall accepts a caller-supplied embedding and exact model identity; it does not silently invoke a provider. Native float32 and int8 are supported; unknown formats refuse. Do not replace ordinary recall with the explicit API without completing its surrounding adapter contract.
 
@@ -87,6 +88,19 @@ A lease includes record kind/ID, binding ID, bank, destination, exact project se
 Do not cache returned memory text as a reusable authorization result. Retain the payload-free lease, resolve it immediately before a new tool/model/provider input, and use only the fresh result. Context changes, changed grant scope, correction/revocation, native record changes or a different destination invalidate old leases. Any store quarantine advances the epoch and conservatively invalidates unrelated older leases too. Reissue through a new authorized read when appropriate; never silently update the old lease's epoch.
 
 This provides a cooperative reuse gate, not universal cache interception. It cannot erase plaintext already held by another caller, retract emitted speech/text, cancel blocked verification or close the race after its final check. No provider runner, stream wrapper or background messaging loop is installed. Long-running delivery and every external cache/provider adapter still require their own qualified gates.
+
+For an explicit synchronous submission, use `evidence.deliver(lease, consumer)` rather than resolving now and queueing the returned plaintext for later. The trusted consumer receives a fresh `AuthorizedMemory` (or authorized source assertion metadata, never source bytes) and must return `None`. `EvidenceDeliveryReceipt(lease, decision_id, context_id, context_epoch)` is frozen sensitive metadata; it contains no payload, proves no remote receipt and grants no access. Deferred callables refuse before reading. Deferred/non-`None` callback results refuse after invocation, when side effects may already have happened. Callback errors/cancellation propagate without retries. A repeated explicit successful call deliberately delivers again: the host must handle idempotency and ambiguous external acknowledgments. See [the delivery contract](policy-delivery-contract.md) for exact failure and non-atomicity boundaries.
+
+```python
+consumed = []  # Synthetic consumer only; not an authorization cache.
+def consume_once(hit):
+    consumed.append(hit.record_id)
+
+with bind_access_context(trusted_context):
+    receipt = evidence.deliver(lease, consume_once)
+```
+
+Here `trusted_context`, `evidence` and `lease` come from the complete example's authenticated-context stand-in and prepared API. Real consumers must honor the lease's destination and must not retain plaintext for future use without another delivery check. Each later submission is a separate gated call. This helper does not register itself with existing provider, tool, queue or streaming paths.
 
 ## Transactions, Defaults And Errors
 

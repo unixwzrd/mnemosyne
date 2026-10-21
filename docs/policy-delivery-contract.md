@@ -1,0 +1,19 @@
+# P3d: Explicit Evidence Delivery Gate
+
+Base: accepted PERF1 `df48870`. Add one explicit synchronous consumer boundary to `PolicyEvidence`; no schema, defaults, automatic provider routing, background delivery, protected activation or live changes. This is a bounded P3 contribution, not completion of streaming, adapters, audit, export/sync or revocation-safe restore.
+
+## Interface And Trust
+
+`PolicyEvidence.deliver(lease, consumer)` reloads and reauthorizes the exact lease through `resolve` immediately before calling a trusted synchronous `consumer(authorized_result)`. The consumer must finish synchronously and return `None`. The result is a frozen `EvidenceDeliveryReceipt` containing the original payload-free lease and fresh decision/context identifiers. It is sensitive metadata, not an authorization credential, public audit record or proof that a remote provider received anything. Constructing a receipt grants no access.
+
+Only a lease, not a previously cached result, may enter delivery. All existing context, destination, project, bank, source/native identity and independently current lifecycle-epoch checks apply. Revocation, changed content or unavailable authority must prevent invocation. No source fetch occurs. Each explicit call invokes the consumer at most once, with no retries, deduplication, asynchronous loop or implicit delivery queue. Repeating a successful call intentionally delivers again; the trusted host owns idempotency and any external acknowledgment.
+
+Reject coroutine, async-generator and generator functions (including callable objects) before resolving. If a nominally synchronous callable returns deferred work or any non-`None` result, refuse after the callback; close returned native coroutines/generators without running them. This cannot undo callback side effects. Propagate callback cancellation/errors with original exception identity and clear completed payload-bearing traceback frames using the existing output guard. A failed callback may already have consumed data: never automatically resend after failure or disconnect.
+
+The consumer is trusted owner code, not a sandbox. It must not queue plaintext for later use, change destination, or use it after an authority change without another delivery check. The engine cannot make a check and arbitrary external side effects atomic, interrupt a blocked callback, stop a callback that ignores revocation, retract emitted bytes or inspect downstream transport state. There is no streaming implementation here. A host must gate each later submission and implement cancellation at the actual transport; ordinary provider/adapter paths remain unqualified. Caller transactions and unsupported stores keep the existing `resolve` refusals.
+
+## Acceptance
+
+Use only synthetic disposable v2 stores. Prove fresh decision IDs and no native writes; supported native/source records; denied, missing, stale, changed and forged leases never invoke the consumer; context/destination changes and A/B/A interleaving refuse unsafe reuse; quarantine during one callback blocks the next delivery. Reject deferred callables before any read, reject deferred return values without running them and preserve callback exception/cancellation identity while clearing completed payload frames. Test caller transactions, legacy catalogs, thread/task context boundaries and explicit repeat delivery. Verify receipt contents are payload-free and immutable, and preserve existing public APIs.
+
+Compare unchanged direct/issue/resolve/denied workloads against the preceding checkpoint before acceptance. Measure the new delivery path separately against manual `resolve` plus the same no-op consumer, with exact output/callback/authority/write oracles. Qualify focused interpreter, selected regression and installed-artifact paths; document limitations without declaring any global V checkbox complete.
