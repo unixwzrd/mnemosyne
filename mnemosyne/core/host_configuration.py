@@ -10,6 +10,7 @@ import json
 import sqlite3
 
 from .host_profile import ProfileDefinition
+from .host_registry import AuthorizationRegistry
 from .policy import PolicyRefusal, RefusalReason, _number, _text
 from .policy_read import _guard_policy_output
 from .policy_store import PolicyStore, PolicyStoreError, StoreErrorCode
@@ -79,11 +80,16 @@ class ConfigurationRevision:
 class ConfigurationSnapshot:
     revision: ConfigurationRevision
     profiles: tuple[ProfileDefinition, ...]
+    registry: AuthorizationRegistry | None = None
 
     def __post_init__(self):
         if type(self.revision) is not ConfigurationRevision:
             raise TypeError("exact configuration revision required")
         object.__setattr__(self, "profiles", _profiles(self.profiles))
+        if self.registry is not None:
+            if type(self.registry) is not AuthorizationRegistry:
+                raise TypeError("exact authorization registry required")
+            self.registry.validate_profiles(self.profiles)
         payload = self.canonical_bytes()
         if len(payload) > MAX_CONFIGURATION_BYTES:
             raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
@@ -91,9 +97,7 @@ class ConfigurationSnapshot:
             raise ValueError("configuration digest mismatch")
 
     def canonical_bytes(self):
-        return _canonical({"contract_version": 1, "authority_id": self.revision.authority_id,
-                           "generation": self.revision.generation,
-                           "profiles": [profile.to_dict() for profile in self.profiles]})
+        return _configuration_bytes(self.revision.authority_id, self.revision.generation, self.profiles, self.registry)
 
 
 @dataclass(frozen=True, repr=False)
@@ -115,15 +119,25 @@ def _checkpoint(revision):
         _WITNESS_DOMAIN, revision.generation, revision.generation), revision.sha256)
 
 
-def _snapshot(authority_id, generation, profiles):
+def _configuration_bytes(authority_id, generation, profiles, registry):
+    document = {"contract_version": 1 if registry is None else 2, "authority_id": authority_id,
+                "generation": generation, "profiles": [profile.to_dict() for profile in profiles]}
+    if registry is not None:
+        document["registry"] = registry.to_dict()
+    return _canonical(document)
+
+
+def _snapshot(authority_id, generation, profiles, registry=None):
     profiles = _profiles(profiles)
-    payload = _canonical({"contract_version": 1, "authority_id": authority_id,
-                          "generation": generation,
-                          "profiles": [profile.to_dict() for profile in profiles]})
+    if registry is not None:
+        if type(registry) is not AuthorizationRegistry:
+            raise TypeError("exact authorization registry required")
+        registry.validate_profiles(profiles)
+    payload = _configuration_bytes(authority_id, generation, profiles, registry)
     if len(payload) > MAX_CONFIGURATION_BYTES:
         raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
     revision = ConfigurationRevision(authority_id, generation, hashlib.sha256(payload).hexdigest())
-    return ConfigurationSnapshot(revision, profiles)
+    return ConfigurationSnapshot(revision, profiles, registry)
 
 
 def _decode(authority_id, row):
@@ -133,13 +147,19 @@ def _decode(authority_id, row):
                 or type(digest) is not bytes or type(operation) is not bytes or type(phase) is not bytes):
             raise ValueError("invalid row")
         decoded = json.loads(payload)
-        if (type(decoded) is not dict or set(decoded) != {"contract_version", "authority_id", "generation", "profiles"}
-                or type(decoded["contract_version"]) is not int or decoded["contract_version"] != 1
+        if type(decoded) is not dict:
+            raise ValueError("invalid document")
+        version = decoded.get("contract_version")
+        expected = {"contract_version", "authority_id", "generation", "profiles"}
+        if type(version) is int and version == 2:
+            expected.add("registry")
+        if (set(decoded) != expected or type(version) is not int or version not in (1, 2)
                 or decoded["authority_id"] != authority_id or type(decoded["generation"]) is not int
                 or decoded["generation"] != generation or type(decoded["profiles"]) is not list
                 or len(decoded["profiles"]) > MAX_PROFILES):
             raise ValueError("invalid document")
-        snapshot = _snapshot(authority_id, generation, tuple(ProfileDefinition.from_dict(item) for item in decoded["profiles"]))
+        registry = AuthorizationRegistry.from_dict(decoded["registry"]) if version == 2 else None
+        snapshot = _snapshot(authority_id, generation, tuple(ProfileDefinition.from_dict(item) for item in decoded["profiles"]), registry)
         if snapshot.canonical_bytes() != payload or snapshot.revision.sha256 != digest.decode("ascii"):
             raise ValueError("noncanonical document")
         return snapshot, ConfigurationReceipt(snapshot.revision, operation.decode("utf-8"), phase.decode("ascii"))
@@ -296,17 +316,19 @@ class HostConfigurationAuthority:
         return None if row is None else row[1]
 
     @_guard_policy_output
-    def stage(self, profiles, *, previous, operation_id):
+    def stage(self, profiles, *, previous, operation_id, registry=None):
         self._ready(write=True)
         _text(operation_id, "operation_id")
         if previous is not None and (type(previous) is not ConfigurationRevision or previous.authority_id != self._authority_id):
             raise TypeError("exact same-authority predecessor required")
         generation = 1 if previous is None else previous.generation + 1
-        snapshot = _snapshot(self._authority_id, generation, profiles)
+        snapshot = _snapshot(self._authority_id, generation, profiles, registry)
         conn = self._store.conn
         with self._store._transaction(write=True):
             self._schema()
             head = self._row()
+            if head is not None and head[0].registry is not None and registry is None:
+                raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             existing = self._row(operation_id=operation_id)
             if existing is not None:
                 if existing != head or existing[0] != snapshot:
@@ -365,8 +387,8 @@ class HostConfigurationAuthority:
         return ConfigurationReceipt(snapshot.revision, receipt.operation_id, "committed")
 
     @_guard_policy_output
-    def publish(self, profiles, *, previous, operation_id):
-        receipt = self.stage(profiles, previous=previous, operation_id=operation_id)
+    def publish(self, profiles, *, previous, operation_id, registry=None):
+        receipt = self.stage(profiles, previous=previous, operation_id=operation_id, registry=registry)
         self.advance_witness(receipt)
         return self.finalize(receipt)
 

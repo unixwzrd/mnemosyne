@@ -206,6 +206,8 @@ class ProfileAdministration:
         claim = self._fresh(request, profile_id=profile_id, capabilities=frozenset({"profiles:view"}))
         current = self._current()
         prior = next((p for p in current.profiles if p.profile_id == profile_id), None)
+        if current.registry is not None:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         if replacement == prior or (prior is not None and replacement is not None and replacement.version <= prior.version):
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         kind = "labels" if prior is not None and replacement is not None and replacement.policy == prior.policy else "policy"
