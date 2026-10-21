@@ -232,15 +232,47 @@ def test_errors_cancel_once_and_clear_completed_payload_frames(evidence, where, 
         calls.append(True)
         assert chunk == "STREAM-FRAME-CANARY"
         raise error
-    with pytest.raises(type(error)) as caught:
-        run(evidence[3], lease, producer, consumer)
-    assert caught.value is error and closed == [True]
+    async def scenario():
+        # Assert at the API await boundary, not asyncio.run's outer Task,
+        # which replaces cancellations on Python 3.10 (CPython #89553).
+        with pytest.raises(type(error)) as caught:
+            await evidence[3].stream([lease],producer,consumer)
+        assert caught.value is error
+    with bind_access_context(context()):
+        asyncio.run(scenario())
+    assert closed == [True]
     assert len(calls) == (1 if where == "consumer" else 0)
     tb = error.__traceback__
     while tb is not None:
         if tb.tb_frame.f_code.co_name in {"stream_evidence", "_next", "producer", "consumer", "_consume"}:
             assert not tb.tb_frame.f_locals
         tb = tb.tb_next
+
+
+@pytest.mark.parametrize("cleanup_error", [RuntimeError("cleanup failed"), asyncio.CancelledError("cleanup cancelled")])
+def test_cleanup_error_does_not_replace_consumer_failure(evidence, cleanup_error):
+    add(evidence[0], "w", content="CLEANUP-FRAME-CANARY")
+    closed = []
+    primary = RuntimeError("consumer failed")
+    async def producer(hits):
+        private = hits[0].content
+        try:
+            yield private
+        finally:
+            closed.append(True)
+            raise cleanup_error
+    def consumer(chunk):
+        assert chunk == "CLEANUP-FRAME-CANARY"
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        run(evidence[3], issue(evidence), producer, consumer)
+    assert caught.value is primary and closed == [True]
+    for error in (primary, cleanup_error):
+        tb = error.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code.co_name in {"_stream_evidence", "_next", "_finish", "producer", "consumer"}:
+                assert not tb.tb_frame.f_locals
+            tb = tb.tb_next
 
 
 def test_repeated_cancellation_drains_cleanup_without_retries(evidence):
@@ -258,16 +290,21 @@ def test_repeated_cancellation_drains_cleanup_without_retries(evidence):
                 cleaning.set()
                 await finish.wait()
                 closed.append(True)
-        task = asyncio.create_task(evidence[3].stream([lease], producer, calls.append))
+        observed = []
+        async def request():
+            try:
+                await evidence[3].stream([lease],producer,calls.append)
+            except asyncio.CancelledError as error:
+                observed.append(error)
+        task = asyncio.create_task(request())
         await entered.wait()
         task.cancel("first")
         await cleaning.wait()
         task.cancel("second")
         await asyncio.sleep(0)
         finish.set()
-        with pytest.raises(asyncio.CancelledError) as caught:
-            await task
-        assert caught.value.args == ("first",)
+        await task
+        assert len(observed) == 1 and observed[0].args == ("first",)
         assert asyncio.all_tasks() == {asyncio.current_task()}
     with bind_access_context(context()):
         asyncio.run(scenario())

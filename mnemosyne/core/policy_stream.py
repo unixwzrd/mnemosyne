@@ -61,30 +61,40 @@ def _leases(values):
 
 
 async def _next(stream, fingerprint):
-    if get_access_context(required=True).fingerprint() != fingerprint:
-        raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
-    value = await stream.__anext__()
-    if get_access_context(required=True).fingerprint() != fingerprint:
-        raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
-    return value
+    # Carry errors as data across our internal Task boundary: Python 3.10
+    # otherwise replaces CancelledError before the gate can re-raise it.
+    try:
+        if get_access_context(required=True).fingerprint() != fingerprint:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        value = await stream.__anext__()
+        if get_access_context(required=True).fingerprint() != fingerprint:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        return True, value
+    except BaseException as error:
+        return False, error
 
 
-async def _finish(stream, pending):
+async def _finish(stream, pending, errors):
     try:
         if pending is not None:
             if not pending.done():
                 pending.cancel()
             try:
-                await pending
+                success, value = await pending
+                if not success and not isinstance(value, StopAsyncIteration):
+                    errors.append(value)
             except BaseException as error:
-                _clear_traceback_frames(error)
+                errors.append(error)
     finally:
-        await stream.aclose()
+        try:
+            await stream.aclose()
+        except BaseException as error:
+            errors.append(error)
 
 
-async def _close(stream, pending):
+async def _close(stream, pending, errors):
     # The cleanup task is always drained, even after repeated caller cancellation.
-    cleanup = asyncio.create_task(_finish(stream, pending))
+    cleanup = asyncio.create_task(_finish(stream, pending, errors))
     cancellation = None
     while not cleanup.done():
         try:
@@ -98,6 +108,17 @@ async def _close(stream, pending):
 
 
 async def stream_evidence(evidence, leases, producer, consumer, *, limits=None):
+    # A suspended coroutine's frame can be closed by frame.clear() on Python
+    # 3.10. Clear only after the entire worker and cleanup tasks have unwound.
+    errors = []
+    try:
+        return await _stream_evidence(evidence, leases, producer, consumer, limits=limits, errors=errors)
+    finally:
+        for error in errors:
+            _clear_traceback_frames(error)
+
+
+async def _stream_evidence(evidence, leases, producer, consumer, *, limits, errors):
     from .policy_evidence import PolicyEvidence
     if not isinstance(evidence, PolicyEvidence):
         raise TypeError("evidence must be a PolicyEvidence")
@@ -149,14 +170,15 @@ async def stream_evidence(evidence, leases, producer, consumer, *, limits=None):
                     raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
                 await asyncio.wait((pending,), timeout=min(limits.poll_seconds, remaining))
                 current()
-            try:
-                chunk = pending.result()
-            except StopAsyncIteration:
+            success, chunk = pending.result()
+            if not success and isinstance(chunk, StopAsyncIteration):
                 current()
                 if loop.time() >= deadline:
                     raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
                 return EvidenceStreamReceipt(leases[0].scope_fingerprint, leases[0].destination,
                     leases[0].lifecycle_epoch, len(leases), chunks, total)
+            if not success:
+                raise chunk
             pending = None
             if type(chunk) is not str:
                 raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
@@ -176,11 +198,14 @@ async def stream_evidence(evidence, leases, producer, consumer, *, limits=None):
             chunk = None
     except BaseException as error:
         original_error = error
+        errors.append(error)
         raise
     finally:
         try:
-            await _close(stream, pending)
+            await _close(stream, pending, errors)
+            if original_error is None and errors:
+                raise errors[0]
         except BaseException as cleanup_error:
+            errors.append(cleanup_error)
             if original_error is None:
                 raise
-            _clear_traceback_frames(cleanup_error)
