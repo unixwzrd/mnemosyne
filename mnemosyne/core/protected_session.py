@@ -386,5 +386,15 @@ class ProtectedSession:
             "hybrid": self.hybrid,
         }
         if type(operation) is not str or operation not in methods:
+            if self._conn is None:
+                raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
+            context, grant, _ = self._reader._decision(self._destination, self._projects)
+            event = self._event(context, grant, "dispatch", PolicySurface.DIRECT,
+                                reason=RefusalReason.UNSUPPORTED_SURFACE)
+            try:
+                self._audit.admit(event, lambda _: None)
+            except PolicyRefusal as error:
+                if error.reason is not RefusalReason.ACCESS_DENIED:
+                    raise
             raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         return methods[operation](**arguments)
