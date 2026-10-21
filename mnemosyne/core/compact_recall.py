@@ -107,6 +107,38 @@ class CompactRecall:
             ensure_ascii=True,
         )
 
+    def _connection(self):
+        conn = (
+            self._evidence.reader._store.conn
+            if type(self._evidence) is PolicyEvidence
+            else self._evidence._conn
+        )
+        if conn is None:
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
+        if conn.in_transaction:
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        return conn
+
+    def _batch(self, candidates):
+        # Match the existing cooperative stream's native-change fence. A later
+        # lease read must not hide a correction to an earlier checked record.
+        conn = self._connection()
+
+        def version():
+            return (
+                conn.execute("PRAGMA main.data_version").fetchone()[0],
+                conn.execute("PRAGMA main.schema_version").fetchone()[0],
+                conn.total_changes,
+            )
+
+        before = version()
+        values = tuple(
+            self._evidence.resolve(candidate.lease) for candidate in candidates
+        )
+        if before != version() or self._connection() is not conn:
+            raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
+        return values
+
     @_guard_policy_output
     def deliver(
         self,
@@ -160,8 +192,7 @@ class CompactRecall:
         # No arbitrary result dictionary or caller-provided excerpt is trusted.
         # Resolve every supplied lease, including candidates later not selected.
         hits = {}
-        for value in supplied:
-            hit = self._evidence.resolve(value.lease)
+        for hit in self._batch(supplied):
             if type(hit) is not AuthorizedMemory:
                 raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             if type(hit.content) is not str or len(hit.content) > 16384:
@@ -218,8 +249,7 @@ class CompactRecall:
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
         # Tokenizers and packing are host callbacks/work: reauthorize after all
         # of it. No prior successful lookup grants delivery under a new ceiling.
-        for candidate in supplied:
-            self._evidence.resolve(candidate.lease)
+        self._batch(supplied)
         if get_access_context(required=True).fingerprint() != fingerprint:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         _consume(consumer, wire)

@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+import sqlite3
 
 import pytest
 
@@ -250,26 +251,80 @@ def test_compact_delivery_uses_guarded_session_audit_and_exact_value(session):
     memory, audit, *_ = session
     lease = memory.issue(RecordKind.WORKING, "w")
     seen = []
-    receipt = CompactRecall(memory, tokenizer_id="synthetic:byte-v1", count_tokens=byte_tokens).deliver(
-        [CompactCandidate(lease)], [], seen.append, token_budget=2000)
+    receipt = CompactRecall(
+        memory, tokenizer_id="synthetic:byte-v1", count_tokens=byte_tokens
+    ).deliver([CompactCandidate(lease)], [], seen.append, token_budget=2000)
     decoded = json.loads(seen[0])
     assert decoded["primary"][0]["excerpt"] == "PRIVATE-REPOSITORY-CANARY"
     assert receipt.tokens == byte_tokens(seen[0])
-    assert audit._store.conn.execute("SELECT count(*) FROM policy_audit_events").fetchone()[0] >= 3
+    assert (
+        audit._store.conn.execute(
+            "SELECT count(*) FROM policy_audit_events"
+        ).fetchone()[0]
+        >= 3
+    )
 
 
 def test_guarded_snapshot_change_during_packing_refuses(session, repository, evidence):
     memory, _, _, previous, _ = session
     lease = memory.issue(RecordKind.WORKING, "w")
     changed = []
+
     def count(wire):
         if not changed:
             changed.append(True)
-            repository[0].publish(evidence[0].conn, identity(generation=3),
-                previous=previous.checkpoint, operation_id="compact:change")
+            repository[0].publish(
+                evidence[0].conn,
+                identity(generation=3),
+                previous=previous.checkpoint,
+                operation_id="compact:change",
+            )
         return byte_tokens(wire)
+
     seen = []
     with pytest.raises(PolicyRefusal, match="access_denied"):
-        CompactRecall(memory, tokenizer_id="synthetic:byte-v1", count_tokens=count).deliver(
-            [CompactCandidate(lease)], [], seen.append)
+        CompactRecall(
+            memory, tokenizer_id="synthetic:byte-v1", count_tokens=count
+        ).deliver([CompactCandidate(lease)], [], seen.append)
     assert seen == []
+
+
+@pytest.mark.parametrize("phase", ["initial", "final"])
+def test_native_correction_to_earlier_lease_during_later_resolve_refuses_whole_batch(
+    evidence, monkeypatch, phase
+):
+    for record in ("a", "b"):
+        add(evidence[0], record, content="original " + record)
+    items = [candidate(evidence, record) for record in ("a", "b")]
+    path = evidence[0].conn.execute("PRAGMA database_list").fetchone()[2]
+    writer = sqlite3.connect(path)
+    resolve = evidence[3].resolve
+    calls = []
+
+    def correction(lease):
+        value = resolve(lease)
+        calls.append(lease.record_id)
+        if len(calls) == (2 if phase == "initial" else 4):
+            writer.execute(
+                "UPDATE working_memory SET content='CORRECTED-A' WHERE id='a'"
+            )
+            writer.commit()
+        return value
+
+    monkeypatch.setattr(evidence[3], "resolve", correction)
+    seen = []
+    try:
+        with (
+            bind_access_context(context()),
+            pytest.raises(PolicyRefusal, match="access_denied"),
+        ):
+            api(evidence).deliver(items, [], seen.append)
+        assert seen == []
+        assert (
+            writer.execute(
+                "SELECT content FROM working_memory WHERE id='a'"
+            ).fetchone()[0]
+            == "CORRECTED-A"
+        )
+    finally:
+        writer.close()
