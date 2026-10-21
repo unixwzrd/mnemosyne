@@ -179,6 +179,15 @@ _COLLECTIONS = (
 )
 
 
+def _empty_size():
+    return len(json.dumps({"contract_version": REGISTRY_CONTRACT_VERSION,
+        **{name: [] for name, *_ in _COLLECTIONS}}, sort_keys=True, separators=(",", ":")))
+
+
+def _record_size(record):
+    return len(json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+
+
 @dataclass(frozen=True, repr=False)
 class AuthorizationRegistry:
     principals: tuple[PrincipalRegistration, ...] = ()
@@ -203,13 +212,12 @@ class AuthorizationRegistry:
     def _budget(self):
         # Bound the aggregate before building a potentially much larger nested
         # JSON document; each individual record has already bounded its sets.
-        size = len(json.dumps({"contract_version": REGISTRY_CONTRACT_VERSION,
-            **{name: [] for name, *_ in _COLLECTIONS}}, sort_keys=True, separators=(",", ":")))
+        size = _empty_size()
         for name, *_ in _COLLECTIONS:
             values = getattr(self, name)
             size += max(0, len(values) - 1)
             for value in values:
-                size += len(json.dumps(value.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True))
+                size += _record_size(value)
                 if size > MAX_REGISTRY_BYTES:
                     raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
 
@@ -261,9 +269,18 @@ class AuthorizationRegistry:
         if type(values["contract_version"]) is not int or values["contract_version"] != REGISTRY_CONTRACT_VERSION:
             raise ValueError("unsupported registry contract")
         records = {}
+        size = _empty_size()
         for name, record, maximum, _ in _COLLECTIONS:
             items = values[name]
             if type(items) is not list or len(items) > maximum:
                 raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
-            records[name] = tuple(record.from_dict(item) for item in items)
+            size += max(0, len(items) - 1)
+            converted = []
+            for item in items:
+                value = record.from_dict(item)
+                size += _record_size(value)
+                if size > MAX_REGISTRY_BYTES:
+                    raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
+                converted.append(value)
+            records[name] = tuple(converted)
         return cls(**records)

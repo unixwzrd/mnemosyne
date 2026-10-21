@@ -276,3 +276,25 @@ def test_profile_only_facade_cannot_strip_or_change_registry(authority):
     with pytest.raises(PolicyRefusal, match="unsupported_surface"):
         admin.preview(object(), "example", replace(profile(), version=2))
     assert api.current().revision == initial.revision and api.current().registry == registry()
+
+
+def test_import_budget_stops_before_deserializing_the_remaining_grants(monkeypatch):
+    data = registry().to_dict()
+    base = data["principals"][0]
+    people = [dict(base, principal_id=f"p:{i}", subject=f"s:{i}") for i in range(128)]
+    data["principals"] += people
+    large = [f"label:{i}:" + "x" * 112 for i in range(256)]
+    grant = data["grants"][0]
+    dimensions = ("projects", "owners", "tenants", "compartments", "audiences", "purposes", "operations")
+    data["grants"] = [dict(grant, principal_id=p["principal_id"], **{name: large for name in dimensions})
+                      for p in people]
+    original, calls = GrantRegistration.from_dict, []
+
+    def count(cls, item):
+        calls.append(item["principal_id"])
+        return original(item)
+
+    monkeypatch.setattr(GrantRegistration, "from_dict", classmethod(count))
+    with pytest.raises(PolicyRefusal, match="resource_limit"):
+        AuthorizationRegistry.from_dict(data)
+    assert len(calls) == 2
