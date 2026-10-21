@@ -4,12 +4,12 @@ No authentication, administration role, content grant, profile default or
 protected frontend activation is supplied by these metadata APIs.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import sqlite3
 
-from .host_profile import ProfileDefinition
+from .host_profile import ProfileDefinition, _exact_dict
 from .host_registry import AuthorizationRegistry
 from .policy import PolicyRefusal, RefusalReason, _number, _text
 from .policy_read import _guard_policy_output
@@ -77,14 +77,33 @@ class ConfigurationRevision:
 
 
 @dataclass(frozen=True, repr=False)
+class CancellationReference:
+    operation_id: str
+    revision: ConfigurationRevision
+
+    def __post_init__(self):
+        _text(self.operation_id, "operation_id")
+        if type(self.revision) is not ConfigurationRevision:
+            raise TypeError("exact abandoned revision required")
+
+
+@dataclass(frozen=True, repr=False)
 class ConfigurationSnapshot:
     revision: ConfigurationRevision
     profiles: tuple[ProfileDefinition, ...]
     registry: AuthorizationRegistry | None = None
+    storage_version: int = 1
+    abandoned: CancellationReference | None = None
 
     def __post_init__(self):
         if type(self.revision) is not ConfigurationRevision:
             raise TypeError("exact configuration revision required")
+        if type(self.storage_version) is not int or self.storage_version not in (1, 2):
+            raise ValueError("supported owner storage version required")
+        if self.abandoned is not None and (self.storage_version != 2 or type(self.abandoned) is not CancellationReference
+                or self.abandoned.revision.authority_id != self.revision.authority_id
+                or self.abandoned.revision.generation != self.revision.generation):
+            raise ValueError("same-generation explicit cancellation reference required")
         object.__setattr__(self, "profiles", _profiles(self.profiles))
         if self.registry is not None:
             if type(self.registry) is not AuthorizationRegistry:
@@ -97,7 +116,8 @@ class ConfigurationSnapshot:
             raise ValueError("configuration digest mismatch")
 
     def canonical_bytes(self):
-        return _configuration_bytes(self.revision.authority_id, self.revision.generation, self.profiles, self.registry)
+        return _configuration_bytes(self.revision.authority_id, self.revision.generation, self.profiles, self.registry,
+                                    storage_version=self.storage_version, abandoned=self.abandoned)
 
 
 @dataclass(frozen=True, repr=False)
@@ -110,7 +130,7 @@ class ConfigurationReceipt:
         if type(self.revision) is not ConfigurationRevision:
             raise TypeError("exact configuration revision required")
         _text(self.operation_id, "operation_id")
-        if self.phase not in ("prepared", "committed"):
+        if self.phase not in ("prepared", "committed", "cancelled"):
             raise ValueError("unsupported receipt phase")
 
 
@@ -119,25 +139,27 @@ def _checkpoint(revision):
         _WITNESS_DOMAIN, revision.generation, revision.generation), revision.sha256)
 
 
-def _configuration_bytes(authority_id, generation, profiles, registry):
-    document = {"contract_version": 1 if registry is None else 2, "authority_id": authority_id,
+def _configuration_bytes(authority_id, generation, profiles, registry, *, storage_version=1, abandoned=None):
+    document = {"contract_version": 3 if storage_version == 2 else (1 if registry is None else 2), "authority_id": authority_id,
                 "generation": generation, "profiles": [profile.to_dict() for profile in profiles]}
-    if registry is not None:
-        document["registry"] = registry.to_dict()
+    if registry is not None or storage_version == 2:
+        document["registry"] = None if registry is None else registry.to_dict()
+    if storage_version == 2:
+        document.update(storage_version=2, abandoned=None if abandoned is None else asdict(abandoned))
     return _canonical(document)
 
 
-def _snapshot(authority_id, generation, profiles, registry=None):
+def _snapshot(authority_id, generation, profiles, registry=None, *, storage_version=1, abandoned=None):
     profiles = _profiles(profiles)
     if registry is not None:
         if type(registry) is not AuthorizationRegistry:
             raise TypeError("exact authorization registry required")
         registry.validate_profiles(profiles)
-    payload = _configuration_bytes(authority_id, generation, profiles, registry)
+    payload = _configuration_bytes(authority_id, generation, profiles, registry, storage_version=storage_version, abandoned=abandoned)
     if len(payload) > MAX_CONFIGURATION_BYTES:
         raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
     revision = ConfigurationRevision(authority_id, generation, hashlib.sha256(payload).hexdigest())
-    return ConfigurationSnapshot(revision, profiles, registry)
+    return ConfigurationSnapshot(revision, profiles, registry, storage_version, abandoned)
 
 
 def _decode(authority_id, row):
@@ -153,13 +175,28 @@ def _decode(authority_id, row):
         expected = {"contract_version", "authority_id", "generation", "profiles"}
         if type(version) is int and version == 2:
             expected.add("registry")
-        if (set(decoded) != expected or type(version) is not int or version not in (1, 2)
+        if type(version) is int and version == 3:
+            expected.update({"registry", "storage_version", "abandoned"})
+        if (set(decoded) != expected or type(version) is not int or version not in (1, 2, 3)
                 or decoded["authority_id"] != authority_id or type(decoded["generation"]) is not int
                 or decoded["generation"] != generation or type(decoded["profiles"]) is not list
                 or len(decoded["profiles"]) > MAX_PROFILES):
             raise ValueError("invalid document")
-        registry = AuthorizationRegistry.from_dict(decoded["registry"]) if version == 2 else None
-        snapshot = _snapshot(authority_id, generation, tuple(ProfileDefinition.from_dict(item) for item in decoded["profiles"]), registry)
+        registry = AuthorizationRegistry.from_dict(decoded["registry"]) if version >= 2 and decoded["registry"] is not None else None
+        if version == 2 and registry is None:
+            raise ValueError("legacy registry envelope cannot omit registry")
+        abandoned = None
+        if version == 3:
+            if type(decoded["storage_version"]) is not int or decoded["storage_version"] != 2:
+                raise ValueError("explicit cancellable owner format required")
+            if decoded["abandoned"] is not None:
+                value = _exact_dict(decoded["abandoned"], {"operation_id", "revision"}, "cancellation")
+                revision = ConfigurationRevision(**_exact_dict(value["revision"], {"authority_id", "generation", "sha256"}, "revision"))
+                abandoned = CancellationReference(value["operation_id"], revision)
+        snapshot = _snapshot(authority_id, generation, tuple(ProfileDefinition.from_dict(item) for item in decoded["profiles"]), registry,
+                             storage_version=2 if version == 3 else 1, abandoned=abandoned)
+        if phase not in (b"prepared", b"committed"):
+            raise ValueError("physical rows cannot invent cancellation disposition")
         if snapshot.canonical_bytes() != payload or snapshot.revision.sha256 != digest.decode("ascii"):
             raise ValueError("noncanonical document")
         return snapshot, ConfigurationReceipt(snapshot.revision, operation.decode("utf-8"), phase.decode("ascii"))
@@ -175,17 +212,23 @@ class HostConfigurationAuthority:
     and raw owner capabilities must stay outside ordinary/model tools.
     """
 
-    def __init__(self, conn, *, authority_id, witness_connection, witness_id):
+    def __init__(self, conn, *, authority_id, witness_connection, witness_id, storage_version=1):
         if not isinstance(conn, sqlite3.Connection) or not isinstance(witness_connection, sqlite3.Connection):
             raise TypeError("explicit owner and witness connections required")
         _store_id(authority_id)
         _store_id(witness_id)
+        if type(storage_version) is not int or storage_version not in (1, 2):
+            raise ValueError("explicit supported owner format required")
         if conn is witness_connection or authority_id == witness_id:
             raise ValueError("independent witness connection and identity required")
         self._store = PolicyStore(conn)
         self._witness = SnapshotAuthority(witness_connection, authority_id=witness_id)
         self._witness_connection = witness_connection
         self._authority_id = authority_id
+        self._storage_version, self._ddl = storage_version, _DDL
+        if storage_version == 2:
+            from .cancellable_configuration import definitions
+            self._ddl = definitions()
         self._separate_files()
 
     def _separate_files(self):
@@ -232,13 +275,14 @@ class HostConfigurationAuthority:
 
     def _schema(self):
         conn = self._store.conn
-        rows = conn.execute("SELECT CASE WHEN length(CAST(name AS BLOB))<=256 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM main.sqlite_master WHERE substr(name,1,7)!='sqlite_' AND type IN ('table','trigger','view','index') LIMIT ?", (len(_DDL) + 1,)).fetchall()
+        ddl = self._ddl
+        rows = conn.execute("SELECT CASE WHEN length(CAST(name AS BLOB))<=256 THEN name ELSE NULL END,CASE WHEN length(CAST(sql AS BLOB))<=16384 THEN sql ELSE NULL END FROM main.sqlite_master WHERE substr(name,1,7)!='sqlite_' AND type IN ('table','trigger','view','index') LIMIT ?", (len(ddl) + 1,)).fetchall()
         normalize = lambda value: "".join(value.split()) if type(value) is str else None
-        if (len(rows) != len(_DDL) or any(name not in _DDL or normalize(sql) != normalize(_DDL[name]) for name, sql in rows)
+        if (len(rows) != len(ddl) or any(name not in ddl or normalize(sql) != normalize(ddl[name]) for name, sql in rows)
                 or conn.execute("SELECT 1 FROM temp.sqlite_master LIMIT 1").fetchone() is not None):
             raise PolicyStoreError(StoreErrorCode.INCOMPATIBLE)
         state = conn.execute("SELECT singleton,schema_version,CASE WHEN length(CAST(authority_id AS BLOB))=32 THEN CAST(authority_id AS BLOB) ELSE NULL END FROM main.host_configuration_state LIMIT 2").fetchall()
-        if state != [(1, 1, self._authority_id.encode("ascii"))]:
+        if state != [(1, self._storage_version, self._authority_id.encode("ascii"))]:
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
 
     @_guard_policy_output
@@ -249,13 +293,19 @@ class HostConfigurationAuthority:
         conn = self._store.conn
         with self._store._transaction(write=True):
             if not conn.execute("SELECT 1 FROM main.sqlite_master WHERE substr(name,1,7)!='sqlite_' LIMIT 1").fetchone():
-                for ddl in _DDL.values():
+                for ddl in self._ddl.values():
                     prefix = "CREATE TRIGGER " if ddl.startswith("CREATE TRIGGER ") else "CREATE TABLE "
                     conn.execute(ddl.replace(prefix, prefix + "main.", 1))
-                conn.execute("INSERT INTO main.host_configuration_state VALUES(1,1,?)", (self._authority_id,))
+                conn.execute("INSERT INTO main.host_configuration_state VALUES(1,?,?)", (self._storage_version, self._authority_id))
             self._schema()
 
     def _row(self, *, operation_id=None, generation=None):
+        if self._storage_version == 2:
+            from .cancellable_configuration import row
+            return row(self, operation_id=operation_id, generation=generation)
+        return self._raw_row(operation_id=operation_id, generation=generation)
+
+    def _raw_row(self, *, operation_id=None, generation=None):
         sql, parameters = _PROJECTION, ()
         if operation_id is not None:
             sql += " WHERE operation_id=?"
@@ -271,7 +321,10 @@ class HostConfigurationAuthority:
         if self._witness.current(self._authority_id) != _checkpoint(revision):
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
 
-    def _register_versions(self, profiles):
+    def _register_versions(self, profiles, *, record=True):
+        if self._storage_version == 2:
+            from .cancellable_configuration import register_versions
+            return register_versions(self, profiles, record=record)
         conn = self._store.conn
         for profile in profiles:
             records = (
@@ -304,6 +357,8 @@ class HostConfigurationAuthority:
                 raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
             self._require_witness(head[0].revision)
         self._require_witness(head[0].revision)
+        if head[0].storage_version != self._storage_version:
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
         return head[0]
 
     @_guard_policy_output
@@ -322,11 +377,13 @@ class HostConfigurationAuthority:
         if previous is not None and (type(previous) is not ConfigurationRevision or previous.authority_id != self._authority_id):
             raise TypeError("exact same-authority predecessor required")
         generation = 1 if previous is None else previous.generation + 1
-        snapshot = _snapshot(self._authority_id, generation, profiles, registry)
+        snapshot = _snapshot(self._authority_id, generation, profiles, registry, storage_version=self._storage_version)
         conn = self._store.conn
         with self._store._transaction(write=True):
             self._schema()
             head = self._row()
+            if head is not None and head[0].storage_version != self._storage_version:
+                raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
             if head is not None and head[0].registry is not None and registry is None:
                 raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
             existing = self._row(operation_id=operation_id)
@@ -343,7 +400,7 @@ class HostConfigurationAuthority:
                 self._require_witness(previous)
             if generation > MAX_CONFIGURATION_REVISIONS:
                 raise PolicyRefusal(RefusalReason.RESOURCE_LIMIT)
-            self._register_versions(snapshot.profiles)
+            self._register_versions(snapshot.profiles, record=self._storage_version == 1)
             conn.execute("INSERT INTO main.host_configuration_revisions VALUES(?,?,?,?,?)",
                          (generation, snapshot.revision.sha256, snapshot.canonical_bytes(), operation_id, "prepared"))
         return ConfigurationReceipt(snapshot.revision, operation_id, "prepared")
@@ -359,6 +416,9 @@ class HostConfigurationAuthority:
     @_guard_policy_output
     def advance_witness(self, receipt):
         """Explicit owner admission of a durable prepared successor."""
+        if self._storage_version == 2:
+            from .cancellable_configuration import advance_witness
+            return advance_witness(self, receipt)
         self._ready(write=True)
         with self._store._transaction():
             self._schema()
@@ -376,6 +436,9 @@ class HostConfigurationAuthority:
 
     @_guard_policy_output
     def finalize(self, receipt):
+        if self._storage_version == 2:
+            from .cancellable_configuration import finalize
+            return finalize(self, receipt)
         self._ready(write=True)
         with self._store._transaction(write=True):
             self._schema()
@@ -409,3 +472,23 @@ class HostConfigurationAuthority:
             if old is not None and old[1].phase == "committed" and witness == _checkpoint(old[0].revision):
                 return receipt
         raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
+
+    @_guard_policy_output
+    def cancellation_candidate(self, receipt, *, previous):
+        from .cancellable_configuration import cancellation_candidate
+        return cancellation_candidate(self, receipt, previous=previous)
+
+    @_guard_policy_output
+    def stage_cancellation(self, receipt, *, previous, operation_id):
+        from .cancellable_configuration import stage_cancellation
+        return stage_cancellation(self, receipt, previous=previous, operation_id=operation_id)
+
+    @_guard_policy_output
+    def migrate_cancellable(self, *, operation_id):
+        from .cancellable_configuration import migrate
+        return migrate(self, operation_id=operation_id)
+
+    @_guard_policy_output
+    def resume_cancellable_migration(self, operation_id):
+        from .cancellable_configuration import resume_migration
+        return resume_migration(self, operation_id)

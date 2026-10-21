@@ -195,7 +195,8 @@ class RegistryAdministration:
         if replacement is not None:
             values += (replacement,)
         registry = replace(current.registry, **{kind: values})
-        return _snapshot(self._authority_id, current.revision.generation + 1, current.profiles, registry)
+        return _snapshot(self._authority_id, current.revision.generation + 1, current.profiles, registry,
+                         storage_version=current.storage_version)
 
     def _affected(self, target, *registries):
         kind, identity = target

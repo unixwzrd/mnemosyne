@@ -168,7 +168,8 @@ class GrantAdministration:
         if replacement is not None:
             grants += (replacement,)
         registry = replace(current.registry, grants=grants)
-        return _snapshot(self._authority_id, current.revision.generation + 1, current.profiles, registry)
+        return _snapshot(self._authority_id, current.revision.generation + 1, current.profiles, registry,
+                         storage_version=current.storage_version)
 
     def _expire(self):
         now = time.monotonic()

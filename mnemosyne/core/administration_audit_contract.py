@@ -143,10 +143,44 @@ class ProfileAdministrationIntent:
         return cls(**values)
 
 
+@dataclass(frozen=True, repr=False)
+class CancellationAdministrationIntent:
+    operation_id: str
+    plan_sha256: str
+    previous: ConfigurationRevision
+    candidate: ConfigurationRevision
+    original_operation_id: str
+    original_revision: ConfigurationRevision
+    proposer: AdministrativeActor
+    approver: AdministrativeActor
+
+    def __post_init__(self):
+        _intent_fields(self)
+        _bounded_text(self.original_operation_id, "original_operation_id", 128)
+        if (type(self.original_revision) is not ConfigurationRevision
+                or self.original_revision.authority_id != self.candidate.authority_id
+                or self.original_revision.generation != self.candidate.generation
+                or self.original_revision == self.candidate or self.original_operation_id == self.operation_id):
+            raise ValueError("distinct exact abandoned proposal required")
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        values = dict(_exact_dict(data, set(cls.__dataclass_fields__), "cancellation administrative intent"))
+        for name in ("previous", "candidate", "original_revision"):
+            values[name] = _revision(values[name])
+        for name in ("proposer", "approver"):
+            values[name] = AdministrativeActor.from_dict(values[name])
+        return cls(**values)
+
+
 def _intent(data):
     if type(data) is not dict:
         raise TypeError("exact intent object required")
-    cls = (RegistryAdministrationIntent if "target_kind" in data else
+    cls = (CancellationAdministrationIntent if "original_operation_id" in data else
+           RegistryAdministrationIntent if "target_kind" in data else
            ProfileAdministrationIntent if "profile_id" in data else AdministrationIntent)
     return cls.from_dict(data)
 
@@ -183,4 +217,4 @@ class AdministrationJournalRecord:
     kind: str
     candidate: ConfigurationRevision
     intent_sha256: str
-    intent: AdministrationIntent | RegistryAdministrationIntent | ProfileAdministrationIntent | None
+    intent: AdministrationIntent | RegistryAdministrationIntent | ProfileAdministrationIntent | CancellationAdministrationIntent | None

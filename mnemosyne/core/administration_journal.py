@@ -11,7 +11,7 @@ import stat
 import threading
 
 from .administration_audit_contract import (
-    AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent,
+    AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent, CancellationAdministrationIntent,
     AdministrationJournalRead, AdministrationJournalRecord,
     _digest, _intent, _revision,
 )
@@ -298,7 +298,7 @@ class AdministrationJournal:
     @_entry
     def append_intent(self, intent, *, owner):
         self._ready(write=True)
-        if type(intent) not in (AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent) or self._owner(owner).revision != intent.previous:
+        if type(intent) not in (AdministrationIntent, RegistryAdministrationIntent, ProfileAdministrationIntent, CancellationAdministrationIntent) or self._owner(owner).revision != intent.previous:
             raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
         return self._append({"authority_id": self._authority_id, "journal_id": self._journal_id,
             "operation_id": intent.operation_id, "kind": "intent", "candidate": asdict(intent.candidate), "intent": intent.to_dict()})
@@ -323,6 +323,10 @@ class AdministrationJournal:
             if committed is not None or prepared is not None:
                 raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
             return None
+        if receipt.phase not in ("prepared", "committed"):
+            # The linked cancellation operation has its own true receipt. Never
+            # report the abandoned grant/profile/registry proposal as committed.
+            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
         if receipt.phase == "prepared" and committed is not None:
             raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE)
         if (receipt.revision != intent[0].candidate

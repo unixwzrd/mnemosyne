@@ -270,7 +270,8 @@ class ProfileAdministration:
         profiles = tuple(p for p in current.profiles if p.profile_id != profile_id)
         if replacement is not None:
             profiles += (replacement,)
-        candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry)
+        candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry,
+                              storage_version=current.storage_version)
         self._audit_policy_namespaces(candidate)
         self._audit_separation((claim,), profile_id, current)
         self._fresh(request, profile_id=profile_id,
@@ -330,7 +331,8 @@ class ProfileAdministration:
         if plan.replacement is not None:
             profiles += (plan.replacement,)
         if self._journal is not None:
-            candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry)
+            candidate = _snapshot(self._authority_id, current.revision.generation + 1, profiles, current.registry,
+                                  storage_version=current.storage_version)
             self._audit_policy_namespaces(candidate)
             self._audit_separation((pending.actor, pending.approver), plan.profile_id, current)
             self._audit_separation((pending.actor, pending.approver), plan.profile_id, candidate)
