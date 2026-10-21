@@ -50,8 +50,6 @@ Journal append prepares one local tail, publishes that exact event digest to the
 
 Restoring the journal alone or its witness alone fences inconsistent history. Co-restoring every independent trust anchor cannot prove freshness; the qualified host must preserve a surviving independent anchor for its supported restore domain. A private directory, file timestamp or deterministic marker is not a replacement. This journal does not retroactively give older unjournaled operations attribution or enforce every trusted owner's direct mutation path.
 
-## Separate Reader Authorization
-
 ## Composed Recovery Qualification
 
 The disposable `tests/test_host_administration_recovery.py` suite composes profile, grant and registry changes with fresh request binding and four-file recovery. It verifies that profile edits and subsequent grant restrictions remain intact across later route revisions; every old request handle fences, and the host must authenticate the matching fresh route. An unmapped newly joined participant refuses and cannot reuse the old handle. This is native policy/request admission evidence, not proof of a clean provider context, cancelled output or UI/history isolation.
@@ -66,7 +64,7 @@ An existing owner boundary remains open: after configuration staging succeeds bu
 
 Finishing this recovery path requires an explicit design choice: add a separately authorized and durably attributed cancellation/replacement contract, with new storage/witness and interrupted-migration qualification, or retain the current format and require separately controlled new-authority recovery. Do not silently delete/overwrite the prepared row, advance an obsolete proposal merely to unblock writes, reset its authority epoch, or claim cancellation is already implemented. Neither choice changes production without a separate deployment decision.
 
-## Journal Reader Contract
+## Separate Reader Authorization
 
 `read(authenticated_request, destination=..., after_sequence=0, limit=100)` requires an exact current `AdministrationJournalRead` from the trusted synchronous read authenticator. It names the issuer/principal, whole configuration authority and journal, destination, administrative authorization revision/epoch and only `admin-journal:read`. Ordinary `grants:view`, profile capabilities, content clearances and content-decision `audit:read` do not supply this permission.
 
