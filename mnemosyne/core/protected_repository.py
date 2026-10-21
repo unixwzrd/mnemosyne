@@ -51,6 +51,12 @@ class ProtectedRepository:
             info = os.fstat(fd)
             self._identity = (info.st_dev, info.st_ino)
             self._check_root()
+        except PolicyRefusal:
+            self.close()
+            raise
+        except OSError:
+            self.close()
+            raise PolicyRefusal(RefusalReason.CONTEXT_UNAVAILABLE) from None
         except BaseException:
             self.close()
             raise
@@ -130,6 +136,11 @@ class ProtectedRepository:
             )
             created = True
             with os.fdopen(fd, "wb") as handle:
+                # The host umask may remove owner write permission. Set only
+                # this newly created private descriptor, never an existing file.
+                os.fchmod(handle.fileno(), 0o600)
+                if stat.S_IMODE(os.fstat(handle.fileno()).st_mode) != 0o600:
+                    raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
                 handle.write(artifact.envelope)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -159,7 +170,10 @@ class ProtectedRepository:
                 # may be needed to reconcile an uncertain authority commit.
                 try:
                     os.unlink(pending, dir_fd=self._fd)
-                except FileNotFoundError:
+                except OSError:
+                    # Preserve the primary refusal/cancellation. An encrypted
+                    # pending orphan is recoverable; a raw cleanup path is not
+                    # useful diagnostic output for an adapter.
                     pass
 
     def _current(self, store_id):

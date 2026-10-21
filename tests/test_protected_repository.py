@@ -315,3 +315,41 @@ def test_invalid_root_is_never_adopted(tmp_path, authority, kind):
         ProtectedRepository(path, key=b"x" * 44, authority=authority[0])
     if kind == "mode":
         assert root.stat().st_mode & 0o777 == 0o755
+
+
+def test_restrictive_umask_does_not_publish_an_unreadable_artifact(evidence, repository):
+    first = publish(evidence, repository)
+    if first is None:
+        return
+    repo, root, _ = repository
+    old_mask = os.umask(0o277)
+    try:
+        second = repo.publish(evidence[0].conn, identity(generation=2), previous=first.checkpoint, operation_id="second")
+    finally:
+        os.umask(old_mask)
+    assert (root / (second.checkpoint.envelope_sha256 + ".mnes")).stat().st_mode & 0o777 == 0o600
+    conn, _ = repo.open_current("a" * 32)
+    conn.close()
+
+
+def test_cleanup_denial_preserves_sanitized_primary_error(evidence, repository, monkeypatch):
+    first = publish(evidence, repository)
+    if first is None:
+        return
+    repo, root, api = repository
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "injected failure", "PRIVATE-PENDING-PATH")
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", fail)
+        with pytest.raises(PolicyRefusal, match="context_unavailable") as caught:
+            repo.publish(evidence[0].conn, identity(generation=2), previous=first.checkpoint, operation_id="second")
+        assert "PRIVATE-PENDING-PATH" not in str(caught.value)
+    assert api.current("a" * 32) == first.checkpoint
+    assert len(list(root.glob(".pending-*"))) == 1
+
+
+def test_missing_root_constructor_is_content_free(tmp_path, authority):
+    path = tmp_path / "PRIVATE-MISSING-ROOT"
+    with pytest.raises(PolicyRefusal, match="context_unavailable") as caught:
+        ProtectedRepository(path, key=b"x" * 44, authority=authority[0])
+    assert "PRIVATE-MISSING-ROOT" not in str(caught.value)
