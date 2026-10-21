@@ -28,7 +28,7 @@ Removing a profile referenced by a store, or removing a classification used by a
 
 Any intervening configuration publication, including a grant/route/identity change by the separately trusted owner, invalidates the preview; the facade cannot restore its prior registry. A successful profile edit advances the global configuration generation and invalidates existing request bindings, including for label-only edits. Obtain a fresh authenticated request handle; do not reuse old evidence or model context merely because grants were unchanged. This conservative global invalidation is intentional, not a per-profile optimization.
 
-The trusted administrative authentication callback remains independent from registry content grants. Neither a registry entry nor permission to change display labels authenticates an administrator, and configuration capabilities do not grant data access. Scoped principal/grant/route administration is still unsupported. No new storage schema, migration, source retrieval, embedding call, regulatory evaluator or automatic host activation is introduced.
+The trusted administrative authentication callback remains independent from registry content grants. Neither a registry entry nor permission to change display labels authenticates an administrator, and configuration capabilities do not grant data access. This facade exposes no principal, grant or route mutation; the separate [grant-only interface](host-grant-administration.md) has its own trusted claims, capabilities and approval exclusions. Principal/route administration remains unsupported. No new storage schema, migration, source retrieval, embedding call, regulatory evaluator or automatic host activation is introduced.
 
 ## Interruption And Recovery
 
