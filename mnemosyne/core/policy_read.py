@@ -68,6 +68,23 @@ class ProjectReadGrant(BankReadGrant):
 
 
 @dataclass(frozen=True, repr=False)
+class AuthorizedRetrievalSession:
+    """Explicit owner connection/session for existing native policy retrieval.
+
+    Construction grants no access and initializes no legacy store or provider.
+    The same connection and authenticated conversation checks still apply.
+    """
+
+    conn: sqlite3.Connection
+    session_id: str
+
+    def __post_init__(self):
+        if not isinstance(self.conn, sqlite3.Connection):
+            raise TypeError("explicit owner SQLite connection required")
+        _text(self.session_id, "session_id")
+
+
+@dataclass(frozen=True, repr=False)
 class AuthorizedCandidate:
     record_kind: RecordKind
     record_id: Union[str, int]

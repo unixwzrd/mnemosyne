@@ -59,7 +59,8 @@ def _recall_authorized_hybrid(beam, query, query_embedding, *, embedding_model, 
                               projects=None, top_k=20, candidate_limit=200, scan_limit=1000):
     from .beam import BeamMemory
 
-    if not isinstance(beam, BeamMemory) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
+    from .policy_read import AuthorizedRetrievalSession
+    if not isinstance(beam, (BeamMemory, AuthorizedRetrievalSession)) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
         raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
     if not isinstance(query, str) or len(query) > 4096:
         raise ValueError("query must be bounded nonblank text")

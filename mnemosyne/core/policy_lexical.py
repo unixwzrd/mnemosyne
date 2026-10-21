@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Tuple
 
 from mnemosyne.core.policy import AdapterCapabilities, PolicyRefusal, PolicySurface, RefusalReason, _number, _text
-from mnemosyne.core.policy_read import AuthorizedMemory, PolicyReader, _guard_policy_output
+from mnemosyne.core.policy_read import AuthorizedMemory, AuthorizedRetrievalSession, PolicyReader, _guard_policy_output
 from mnemosyne.core.policy_store import PolicyStoreError, RecordKind, StoreErrorCode
 
 
@@ -59,7 +59,7 @@ def recall_authorized_lexical(beam, query, *, reader, destination, projects=None
         _recall_tokens, _symbolic_code_tokens,
     )
 
-    if not isinstance(beam, BeamMemory) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
+    if not isinstance(beam, (BeamMemory, AuthorizedRetrievalSession)) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
         raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
     if not isinstance(query, str) or len(query) > 4096:
         raise ValueError("query must be bounded nonblank text")

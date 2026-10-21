@@ -59,7 +59,8 @@ def recall_authorized_vector(beam, query_embedding, *, embedding_model, reader, 
         _episodic_recall_where, _vec_float32_blob_cosine, _vec_int8_blob_cosine,
     )
 
-    if not isinstance(beam, BeamMemory) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
+    from .policy_read import AuthorizedRetrievalSession
+    if not isinstance(beam, (BeamMemory, AuthorizedRetrievalSession)) or not isinstance(reader, PolicyReader) or reader._store.conn is not beam.conn:
         raise PolicyRefusal(RefusalReason.ACCESS_DENIED)
     _number(top_k, "top_k")
     _number(scan_limit, "scan_limit")
