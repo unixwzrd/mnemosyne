@@ -32,6 +32,21 @@ def _value(hit):
     return _digest(value)
 
 
+def _require_consumer(consumer):
+    deferred = (inspect.iscoroutinefunction, inspect.isasyncgenfunction, inspect.isgeneratorfunction)
+    if not callable(consumer) or any(check(target) for check in deferred
+        for target in (consumer, getattr(consumer, "__call__", None))):
+        raise TypeError("consumer must be synchronous and return None")
+
+
+def _consume(consumer, value):
+    result = consumer(value)
+    if result is not None:
+        if inspect.iscoroutine(result) or inspect.isgenerator(result):
+            result.close()
+        raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+
+
 @dataclass(frozen=True, repr=False)
 class EvidenceLease:
     """Sensitive metadata, not a bearer credential or authorization decision."""
@@ -99,18 +114,21 @@ class PolicyEvidence:
         No retries or atomic external-delivery promise. A callback that fails or
         returns deferred work may already have had effects; never blindly resend.
         """
-        deferred = (inspect.iscoroutinefunction, inspect.isasyncgenfunction, inspect.isgeneratorfunction)
-        if not callable(consumer) or any(check(target) for check in deferred
-            for target in (consumer, getattr(consumer, "__call__", None))):
-            raise TypeError("consumer must be synchronous and return None")
+        _require_consumer(consumer)
         hit = self.resolve(lease)
         receipt = EvidenceDeliveryReceipt(lease, hit.decision_id, hit.context_id, hit.context_epoch)
-        result = consumer(hit)
-        if result is not None:
-            if inspect.iscoroutine(result) or inspect.isgenerator(result):
-                result.close()
-            raise PolicyRefusal(RefusalReason.UNSUPPORTED_SURFACE)
+        _consume(consumer, hit)
         return receipt
+
+    async def stream(self, leases, producer, consumer, *, limits=None):
+        """Cooperative bounded streaming; actual transports need qualification."""
+        from .policy_stream import stream_evidence
+        try:
+            return await stream_evidence(self, leases, producer, consumer, limits=limits)
+        except BaseException as error:
+            from .source_expansion import _clear_traceback_frames
+            _clear_traceback_frames(error)
+            raise
 
     @_guard_policy_output
     def _read(self, kind, record_id, *, destination, projects, lease):

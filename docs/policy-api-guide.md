@@ -68,6 +68,7 @@ Its `verify_fixture` is deliberately synthetic. Do not copy it into an authentic
 | `PolicyEvidence(reader).issue(kind, record_id, *, destination, projects=None)` | New authorized read producing a payload-free lease. V2 only; caller transactions refuse |
 | `evidence.resolve(lease)` | Fresh authorization plus native reload, exact scope/epoch/binding/value comparison and final checkpoint. Does not return an old cached payload |
 | `evidence.deliver(lease, consumer)` | Resolve immediately before invoking one trusted synchronous `consumer(result)` returning `None`. Returns payload-free completion metadata; no retries, remote-delivery guarantee or stream integration |
+| `await evidence.stream(leases, producer, consumer, *, limits=None)` | Fresh evidence-bound cooperative streaming; 1-32 unique same-scope leases, native async-generator producer and synchronous None-returning chunk consumer. Polls authority while waiting and drains cooperative producer cleanup; no automatic provider installation |
 
 `RecordKind` covers working, episodic and canonical native records plus source revisions. Source revisions use the dedicated metadata API, not generic `reader.get`. Existing explicit lexical/vector/hybrid methods are documented in [lexical](policy-lexical-contract.md), [vector](policy-vector-contract.md) and [hybrid](policy-hybrid-contract.md) contracts. Native vector recall accepts a caller-supplied embedding and exact model identity; it does not silently invoke a provider. Native float32 and int8 are supported; unknown formats refuse. Do not replace ordinary recall with the explicit API without completing its surrounding adapter contract.
 
@@ -87,7 +88,7 @@ A lease includes record kind/ID, binding ID, bank, destination, exact project se
 
 Do not cache returned memory text as a reusable authorization result. Retain the payload-free lease, resolve it immediately before a new tool/model/provider input, and use only the fresh result. Context changes, changed grant scope, correction/revocation, native record changes or a different destination invalidate old leases. Any store quarantine advances the epoch and conservatively invalidates unrelated older leases too. Reissue through a new authorized read when appropriate; never silently update the old lease's epoch.
 
-This provides a cooperative reuse gate, not universal cache interception. It cannot erase plaintext already held by another caller, retract emitted speech/text, cancel blocked verification or close the race after its final check. No provider runner, stream wrapper or background messaging loop is installed. Long-running delivery and every external cache/provider adapter still require their own qualified gates.
+This provides cooperative reuse gates, not universal cache interception. They cannot erase plaintext already held by another caller, retract emitted speech/text, cancel blocked verification or close the race after their final check. No automatic provider runner or background messaging loop is installed. Explicit cooperative streaming below is separately invoked; each actual transport and external cache/provider adapter still needs qualification.
 
 For an explicit synchronous submission, use `evidence.deliver(lease, consumer)` rather than resolving now and queueing the returned plaintext for later. The trusted consumer receives a fresh `AuthorizedMemory` (or authorized source assertion metadata, never source bytes) and must return `None`. `EvidenceDeliveryReceipt(lease, decision_id, context_id, context_epoch)` is frozen sensitive metadata; it contains no payload, proves no remote receipt and grants no access. Deferred callables refuse before reading. Deferred/non-`None` callback results refuse after invocation, when side effects may already have happened. Callback errors/cancellation propagate without retries. A repeated explicit successful call deliberately delivers again: the host must handle idempotency and ambiguous external acknowledgments. See [the delivery contract](policy-delivery-contract.md) for exact failure and non-atomicity boundaries.
 
@@ -101,6 +102,22 @@ with bind_access_context(trusted_context):
 ```
 
 Here `trusted_context`, `evidence` and `lease` come from the complete example's authenticated-context stand-in and prepared API. Real consumers must honor the lease's destination and must not retain plaintext for future use without another delivery check. Each later submission is a separate gated call. This helper does not register itself with existing provider, tool, queue or streaming paths.
+
+## Cooperative Streams
+
+`await evidence.stream(leases, producer, consumer, limits=EvidenceStreamLimits(...))` accepts payload-free leases, not cached text or a running provider request. The trusted producer is called only after fresh authorized reloads and must return a native async generator of builtin string chunks. All leases must share scope/destination/epoch and unique kind+ID pairs. Each pending next-chunk operation is polled for fresh authority; each chunk is reauthorized before the synchronous consumer receives it. A same-connection total-change/schema-version and external-commit data-version fence rejects native changes while assembling a multi-lease batch. No fresh permission or epoch decision is cached.
+
+Import `EvidenceStreamLimits` and `EvidenceStreamReceipt` from `mnemosyne.core.policy_stream`. Defaults: 50 ms polling, 30 s admission deadline, 1024 forwarded chunks, 8192 UTF-8 bytes/chunk and 1 MiB total forwarded bytes. Hard maxima are 1 s polling, 300 s deadline, 4096 chunks, 65536 bytes/chunk and 8 MiB total. Minimum polling/deadline is 5 ms. Refusals precede forwarding unsupported/over-budget chunks. Bounds do not control arbitrary producer/native allocations, scheduling delays or blocking trusted owner callbacks. Increasing a stream's timeout does not extend its grants.
+
+On cancellation, refusal, timeout or producer/consumer error, the gate cancels/drains its pending task and closes the cooperative generator, including repeated caller cancellation during cleanup. It returns no partial success receipt and does not retry. `EvidenceStreamReceipt(scope_fingerprint, destination, lifecycle_epoch, lease_count, chunks_delivered, bytes_delivered)` is frozen sensitive completion metadata with no input/output payloads. Already emitted chunks and remote effects cannot be retracted. Noncooperative cancellation-suppressing producers or blocked synchronous callbacks are unsupported; cleanup can exceed the admission deadline. The host must check current membership/grants independently: child tasks copy ContextVars, not live parent state.
+
+Run the complete model-free example, which emits one chunk, quarantines its source binding and proves the next chunk is refused and the generator closed:
+
+```bash
+PYTHONPATH=. python examples/policy_stream_demo.py
+```
+
+The [stream contract](policy-stream-contract.md) states the exact bounds, trust and unsupported surfaces. This is not automatic OpenAI/Hermes provider integration, a policy service, an authorization bypass for arbitrary model inputs, a remote acknowledgment or protected-mode activation.
 
 ## Transactions, Defaults And Errors
 
