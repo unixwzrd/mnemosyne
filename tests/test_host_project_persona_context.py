@@ -99,7 +99,7 @@ def test_selected_project_and_persona_only_narrow_the_complete_audience(selectio
 
 
 @pytest.mark.parametrize("ceiling", ["open", "team", "sealed"])
-def test_project_chat_ceiling_remains_distinct_from_document_classification(selections, ceiling):
+def test_project_chat_ceiling_cannot_raise_participant_clearance(selections, ceiling):
     value = selections[-1]
     publish(selections, replace(value, conversations=tuple(replace(c, classification_ceiling=ceiling)
         if c.conversation_id == "chat:finance" else c for c in value.conversations)))
@@ -122,7 +122,7 @@ def test_scope_and_compartment_permissions_are_required_from_each_principal(sele
 
 
 @pytest.mark.parametrize("override", ["project_id", "personality", "principal", "classification_ceiling", "participants"])
-def test_model_or_ui_metadata_is_not_identity_proof(selections, override):
+def test_model_metadata_dictionaries_do_not_authenticate(selections, override):
     binding = selections[0]
     with pytest.raises(PolicyRefusal):
         binding.admit({override: "pretend-privileged-selection"})
@@ -137,13 +137,15 @@ def test_new_display_selection_does_not_create_an_authorized_identity(selections
 
 
 @pytest.mark.parametrize("transition", ["project", "persona"])
-def test_selection_change_and_aba_cannot_reuse_old_request_handle(selections, transition):
+@pytest.mark.parametrize("observe_intermediate", [False, True])
+def test_selection_change_and_aba_cannot_reuse_old_request_handle(selections, transition, observe_intermediate):
     binding, request, state, *_ = selections
     old = binding.admit(request)
     before = binding.load_snapshot(old)
     state.update(selected="research" if transition == "project" else "style", epoch=2)
-    with pytest.raises(PolicyRefusal):
-        binding.load_snapshot(old)
+    if observe_intermediate:
+        with pytest.raises(PolicyRefusal):
+            binding.load_snapshot(old)
     state.update(selected="finance", epoch=3)
     with pytest.raises(PolicyRefusal):
         binding.load_snapshot(old)
@@ -160,6 +162,7 @@ def native(selections, session, evidence, repository):
         catalog.register(project, actor="owner:fixture")
     records = (("finance-note", "team", {"compartment:finance"}, ("finance",)),
         ("finance-sealed", "sealed", {"compartment:finance"}, ("finance",)),
+        ("finance-unrelated", "team", {"compartment:finance"}, ("research",)),
         ("research-note", "team", {"compartment:research"}, ("research",)),
         ("shared-relevance", "team", {"compartment:finance"}, ("finance", "research")))
     for record, level, compartments, projects in records:
@@ -182,7 +185,7 @@ def test_actual_encrypted_reader_enforces_project_compartment_and_lowest_clearan
     handle = binding.admit(request)
     seen = set()
     try:
-        for identity in ("finance-note", "finance-sealed", "research-note", "shared-relevance", "absent"):
+        for identity in ("finance-note", "finance-sealed", "finance-unrelated", "research-note", "shared-relevance", "absent"):
             results = []
             native.invoke(handle, "get", {"kind": "working_memory", "record_id": identity}, results.append)
             assert len(results) == 1
