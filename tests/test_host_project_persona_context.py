@@ -14,7 +14,7 @@ from mnemosyne.core.policy import PolicyDefinition, PolicyRefusal
 from mnemosyne.core.policy_host import ProtectedHostAdapter
 from mnemosyne.core.policy_projects import PolicyProjects
 from mnemosyne.core.policy_store import RecordKind
-from tests.test_host_registry import authority as registry_authority
+from tests.test_host_registry import authority as _registry_authority
 from tests.test_policy_read import add, fixture as fixture
 from tests.test_policy_evidence import evidence as evidence
 from tests.test_snapshot_authority import authority as authority
@@ -25,6 +25,7 @@ from tests.test_protected_snapshot import identity
 
 STORE = "a" * 32
 PROJECTS = {"finance": "project:finance", "research": "project:research"}
+registry_authority = _registry_authority
 
 
 @pytest.fixture
