@@ -37,7 +37,10 @@ _FASTEMBED_CACHE_DIR = os.path.join(os.path.expanduser("~/.hermes"), "cache", "f
 
 # --- OpenAI-compatible API ---
 _OPENAI_API_KEY = os.environ.get("OPENROUTER_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-_OPENAI_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+_OPENAI_BASE_URL = os.environ.get(
+    "MNEMOSYNE_EMBEDDING_BASE_URL",  # dedicated embedding endpoint (preferred)
+    os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+)
 
 # --- Model selection ---
 _DEFAULT_MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
@@ -49,9 +52,11 @@ def _is_api_model(model_name: str) -> bool:
     """Check if the model should use the OpenAI-compatible API."""
     if model_name.startswith("openai/") or "text-embedding" in model_name or model_name.startswith("text-embedding"):
         return True
-    # Custom endpoint: if OPENROUTER_BASE_URL is set to a non-OpenRouter URL,
+    # Custom endpoint: if MNEMOSYNE_EMBEDDING_BASE_URL is set to a non-OpenRouter URL,
     # assume the user has their own API server and any model name should route there.
-    base_url = os.environ.get("OPENROUTER_BASE_URL", "")
+    base_url = os.environ.get("MNEMOSYNE_EMBEDDING_BASE_URL", "")
+    if not base_url:
+        base_url = os.environ.get("OPENROUTER_BASE_URL", "")
     if base_url and "openrouter.ai" not in base_url:
         return True
     return False
@@ -79,6 +84,7 @@ def _get_embedding_dim(model_name: str) -> int:
         "intfloat/multilingual-e5-large": 1024,
         # --- Multilingual BGE ---
         "BAAI/bge-m3": 1024,            # M3: multilingual (100+ langs), 1024-dim
+        "BAAI/bge-m3-q8_0.gguf": 1024,   # quantized variant
         "BAAI/bge-multilingual-gemma2": 3584,
         # --- OpenAI ---
         "openai/text-embedding-3-small": 1536,
@@ -168,7 +174,9 @@ def available() -> bool:
         return False
     if _is_api_model(_DEFAULT_MODEL):
         # Custom endpoints (non-OpenRouter) may not require an API key
-        base_url = os.environ.get("OPENROUTER_BASE_URL", "")
+        base_url = os.environ.get("MNEMOSYNE_EMBEDDING_BASE_URL", "")
+        if not base_url:
+            base_url = os.environ.get("OPENROUTER_BASE_URL", "")
         if base_url and "openrouter.ai" not in base_url:
             return True
         return bool(_OPENAI_API_KEY)
